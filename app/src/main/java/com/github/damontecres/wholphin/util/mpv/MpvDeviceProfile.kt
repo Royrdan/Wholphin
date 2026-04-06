@@ -34,15 +34,20 @@ val mpvDeviceProfile =
             type = DlnaProfileType.VIDEO
 
             container(
+                Codec.Container.`3GP`,
                 Codec.Container.ASF,
                 Codec.Container.AVI,
+                Codec.Container.DASH,
+                Codec.Container.DVR_MS,
                 Codec.Container.HLS,
+                Codec.Container.M2V,
                 Codec.Container.M4V,
-                Codec.Container.MPEG,
-                Codec.Container.MPEGTS,
                 Codec.Container.MKV,
                 Codec.Container.MOV,
+                Codec.Container.MP3,
                 Codec.Container.MP4,
+                Codec.Container.MPEG,
+                Codec.Container.MPEGTS,
                 Codec.Container.MPG,
                 Codec.Container.OGM,
                 Codec.Container.OGV,
@@ -50,6 +55,7 @@ val mpvDeviceProfile =
                 Codec.Container.VOB,
                 Codec.Container.WEBM,
                 Codec.Container.WMV,
+                Codec.Container.WTV,
                 Codec.Container.XVID,
             )
 
@@ -59,11 +65,40 @@ val mpvDeviceProfile =
                 Codec.Video.HEVC,
                 Codec.Video.MPEG,
                 Codec.Video.MPEG2VIDEO,
+                Codec.Video.VC1,
                 Codec.Video.VP8,
                 Codec.Video.VP9,
             )
 
-            audioCodec(*supportedAudioCodecs, Codec.Audio.WAV, Codec.Audio.OGG)
+            audioCodec(
+                *supportedAudioCodecs,
+                Codec.Audio.WAV,
+                Codec.Audio.OGG,
+                Codec.Audio.WMA,
+                Codec.Audio.WMAV2,
+                Codec.Audio.APE,
+                Codec.Audio.WEBMA,
+                Codec.Audio.OGA,
+                Codec.Audio.MPA,
+                Codec.Audio.PCM,
+            )
+        }
+
+        directPlayProfile {
+            type = DlnaProfileType.AUDIO
+
+            audioCodec(
+                *supportedAudioCodecs,
+                Codec.Audio.WAV,
+                Codec.Audio.OGG,
+                Codec.Audio.WMA,
+                Codec.Audio.WMAV2,
+                Codec.Audio.APE,
+                Codec.Audio.WEBMA,
+                Codec.Audio.OGA,
+                Codec.Audio.MPA,
+                Codec.Audio.PCM,
+            )
         }
 
         subtitleProfile(Codec.Subtitle.VTT, embedded = true, hls = true, external = true)
