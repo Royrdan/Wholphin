@@ -96,6 +96,17 @@ configure<ApplicationExtension> {
                 enableV4Signing = true
             }
         }
+        // Royrdan custom build signing (keystore + passwords supplied via env at build time)
+        create("custom") {
+            storeFile = file(System.getenv("WHOLPHIN_KEYSTORE") ?: "${System.getProperty("user.home")}/.keys/wholphin-custom.jks")
+            storePassword = System.getenv("WHOLPHIN_STORE_PASS")
+            keyAlias = System.getenv("WHOLPHIN_KEY_ALIAS") ?: "wholphin"
+            keyPassword = System.getenv("WHOLPHIN_KEY_PASS")
+            enableV1Signing = true
+            enableV2Signing = true
+            enableV3Signing = true
+            enableV4Signing = true
+        }
     }
 
     buildTypes {
@@ -107,6 +118,7 @@ configure<ApplicationExtension> {
                 "proguard-rules.pro",
             )
             isDebuggable = false
+            applicationIdSuffix = ".custom"
             if (shouldSign.get()) {
                 signingConfig = signingConfigs.getByName("ci")
             } else {
