@@ -19,6 +19,7 @@ import com.github.damontecres.wholphin.data.PlaybackLanguageChoiceDao
 import com.github.damontecres.wholphin.data.RememberedTabDao
 import com.github.damontecres.wholphin.data.SeerrServerDao
 import com.github.damontecres.wholphin.data.ServerPreferencesDao
+import com.github.damontecres.wholphin.data.WatchlistDao
 import com.github.damontecres.wholphin.preferences.AppPreferences
 import com.github.damontecres.wholphin.preferences.AppPreferencesSerializer
 import dagger.Module
@@ -78,6 +79,10 @@ object DatabaseModule {
     @Provides
     @Singleton
     fun rememberedTabDao(db: AppDatabase): RememberedTabDao = db.rememberedTabDao()
+
+    @Provides
+    @Singleton
+    fun watchlistDao(db: AppDatabase): WatchlistDao = db.watchlistDao()
 
     @Provides
     @Singleton
