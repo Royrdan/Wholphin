@@ -194,7 +194,17 @@ class HomeSettingsViewModel
             viewModelScope.launchIO {
                 updateState {
                     val rows = it.rows.move(direction, index)
-                    val rowData = it.rowData.move(direction, index)
+                    // rowData holds the lazily-loaded preview thumbnails and can be empty or shorter
+                    // than rows (it fills in asynchronously after the editor opens). Only reorder it
+                    // when it is fully in sync; otherwise moving it would index out of bounds and the
+                    // whole reorder would silently fail — which looked like "the move buttons stopped
+                    // working" once lazy-loading landed.
+                    val rowData =
+                        if (it.rowData.size == it.rows.size) {
+                            it.rowData.move(direction, index)
+                        } else {
+                            it.rowData
+                        }
                     it.copy(
                         rows = rows,
                         rowData = rowData,
