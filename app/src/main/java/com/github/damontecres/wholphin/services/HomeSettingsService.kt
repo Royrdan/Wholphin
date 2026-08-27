@@ -41,10 +41,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -1257,41 +1255,41 @@ class HomeSettingsService
                     val title = ResArgStringProvider(R.string.suggestions_for, library.name ?: "")
                     val itemKind = SuggestionsWorker.getTypeForCollection(library.collectionType)
                     if (itemKind != null) {
-                        // The suggestions flow first emits Loading (cold cache) then the real result
-                        // once the worker finishes. Wait for a settled value instead of grabbing the
-                        // initial Loading, else the row is stuck on "Loading" until a manual refresh.
-                        val suggestions =
-                            withTimeoutOrNull(25_000L) {
-                                suggestionService
-                                    .getSuggestionsFlow(row.parentId, itemKind)
-                                    .first { it !is SuggestionsResource.Loading }
+                        // Compute recommendations inline from the user's most-watched genres rather
+                        // than the background SuggestionsWorker. The worker is async + cached and on a
+                        // cold cache left the row stuck on "Loading" (and, by holding a load slot,
+                        // starved the other rows and the settings editor's preview). This is a single
+                        // fast query: a random mix of unplayed titles across the genres they watch most.
+                        val topGenres =
+                            rankedGenres(userDto.id, row.parentId, itemKind, 5).map { it.first }
+                        val items =
+                            if (topGenres.isEmpty()) {
+                                emptyList()
+                            } else {
+                                GetItemsRequestHandler
+                                    .execute(
+                                        api,
+                                        GetItemsRequest(
+                                            parentId = row.parentId,
+                                            userId = userDto.id,
+                                            includeItemTypes = listOf(itemKind),
+                                            genreIds = topGenres,
+                                            isPlayed = false,
+                                            recursive = true,
+                                            sortBy = listOf(ItemSortBy.RANDOM),
+                                            limit = limit,
+                                            enableTotalRecordCount = false,
+                                        ),
+                                    ).content.items
+                                    .map { BaseItem(it, row.viewOptions.useSeries) }
                             }
-                        when (suggestions) {
-                            SuggestionsResource.Empty -> {
-                                Success(
-                                    title,
-                                    listOf(),
-                                    row.viewOptions,
-                                    rowType = row,
-                                )
-                            }
-
-                            is SuggestionsResource.Success -> {
-                                Success(
-                                    title,
-                                    suggestions.items,
-                                    row.viewOptions,
-                                    rowType = row,
-                                    showViewMore = suggestions.items.size >= limit,
-                                )
-                            }
-
-                            SuggestionsResource.Loading,
-                            null,
-                            -> {
-                                HomeRowLoadingState.Loading(title)
-                            }
-                        }
+                        Success(
+                            title,
+                            items,
+                            row.viewOptions,
+                            rowType = row,
+                            showViewMore = items.size >= limit,
+                        )
                     } else {
                         HomeRowLoadingState.Error(
                             title = title,
