@@ -122,6 +122,7 @@ class SeriesViewModel
         init {
             viewModelScope.launchIO {
                 Timber.v("Start")
+                android.util.Log.i("WholphinJP", "SeriesVM init START id=$seriesId")
                 addCloseable { themeSongPlayer.stop() }
                 val series =
                     api.userLibraryApi
@@ -168,10 +169,12 @@ class SeriesViewModel
                         throw ex
                     } catch (ex: Exception) {
                         Timber.e(ex, "Exception fetching seasons/episodes for series %s", seriesId)
+                        android.util.Log.i("WholphinJP", "SeriesVM init ERROR id=$seriesId msg=${ex.message}")
                         _state.update { it.copy(series = DataLoadingState.Error(ex)) }
                         return@launchIO
                     }
                 Timber.v("Done")
+                android.util.Log.i("WholphinJP", "SeriesVM init awaited seasons/episodes id=$seriesId")
 
                 if (seriesPageType == SeriesPageType.OVERVIEW && seasonEpisodeIds != null) {
                     viewModelScope.launchIO {
@@ -201,6 +204,7 @@ class SeriesViewModel
                             (episodes as? EpisodeList.Success)?.initialEpisodeIndex ?: 0,
                     )
                 }
+                android.util.Log.i("WholphinJP", "SeriesVM init SUCCESS id=$seriesId")
                 _state.update {
                     it.copy(
                         series = DataLoadingState.Success(series),
@@ -281,6 +285,7 @@ class SeriesViewModel
         }
 
         fun onResumePage() {
+            android.util.Log.i("WholphinJP", "SeriesVM onResumePage id=$seriesId series=${state.value.series::class.simpleName}")
             state.value.series.successValue?.let { item ->
                 viewModelScope.launchDefault { backdropService.submit(item) }
                 viewModelScope.launchDefault {

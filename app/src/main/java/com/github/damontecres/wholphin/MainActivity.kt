@@ -8,6 +8,7 @@ import android.view.KeyEvent
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.foundation.background
@@ -91,6 +92,21 @@ import kotlin.time.Duration.Companion.milliseconds
 class MainActivity : AppCompatActivity() {
     private val viewModel: MainActivityViewModel by viewModels()
     private val playExternalViewModel: PlayExternalViewModel by viewModels()
+
+    // External-player result handled at the Activity level (registered before RESUMED). This is far
+    // more reliable than a Compose rememberLauncherForActivityResult, which drops the result when the
+    // player page isn't in the resumed composition on return - that dropped result was the root of the
+    // "back from Just Player lands on a loading page that never loads" hang (onResult never fired).
+    private val externalPlayerLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            android.util.Log.i("WholphinJP", "activity externalPlayer result code=${result.resultCode}")
+            playExternalViewModel.onResult(result)
+        }
+
+    fun launchExternalPlayer(intent: Intent) {
+        android.util.Log.i("WholphinJP", "launchExternalPlayer (activity-level)")
+        externalPlayerLauncher.launch(intent)
+    }
 
     @Inject
     lateinit var userPreferencesDataStore: DataStore<AppPreferences>
@@ -182,10 +198,15 @@ class MainActivity : AppCompatActivity() {
         if (restoredBackStack != null) {
             Timber.d("Restoring back stack")
             var backStack = restoredBackStack
+            android.util.Log.i(
+                "WholphinJP",
+                "onCreate restore savedNull=${savedInstanceState == null} last=${backStack.lastOrNull()} launched=${playExternalViewModel.launched.value}",
+            )
             if (!playExternalViewModel.launched.value) {
                 val lastDest = backStack.lastOrNull()
                 if (lastDest.isPlayback) {
                     Timber.v("Restoring back stack without playback")
+                    android.util.Log.i("WholphinJP", "onCreate strip playback entry")
                     backStack = backStack.toMutableList().apply { removeAt(lastIndex) }
                 }
             }
@@ -301,6 +322,10 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         Timber.d("onResume")
+        android.util.Log.i(
+            "WholphinJP",
+            "onResume launched=${playExternalViewModel.launched.value} last=${navigationManager.backStack.lastOrNull()}",
+        )
         viewModel.appResume()
         lifecycleScope.launchDefault {
             screensaverService.pulse()
@@ -310,12 +335,23 @@ class MainActivity : AppCompatActivity() {
     override fun onRestart() {
         super.onRestart()
         Timber.d("onRestart")
-        viewModel.appStart(null)
+        val signedIn = viewModel.serverRepository.current.value != null
+        android.util.Log.i(
+            "WholphinJP",
+            "onRestart signedIn=$signedIn launched=${playExternalViewModel.launched.value} last=${navigationManager.backStack.lastOrNull()}",
+        )
+        // Only re-run the startup/auth flow when there is no active session. Otherwise returning from
+        // an external player (Just Player) with "sign in automatically" OFF re-ran appStart, which
+        // routes to the profile-selection screen every time - i.e. it asked you to log in again.
+        if (!signedIn) {
+            viewModel.appStart(null)
+        }
         if (!playExternalViewModel.launched.value) {
             // If restarting during playback that is not external, go back a page
             val lastDest = navigationManager.backStack.lastOrNull()
             if (lastDest.isPlayback) {
                 Timber.v("onRestart: go back from playback")
+                android.util.Log.i("WholphinJP", "onRestart goBack from playback")
                 navigationManager.goBack()
             }
         }
