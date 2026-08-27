@@ -109,6 +109,13 @@ fun MainContent(
                                         showContent = false
                                     }
                                 }
+                                // Restore the content when we come back to the foreground (e.g. back
+                                // from an external player). With auto-sign-in off, ON_STOP hid the
+                                // content and nothing ever showed it again - leaving a bare spinner.
+                                // Profile selection still happens on a genuine cold start.
+                                LifecycleEventEffect(Lifecycle.Event.ON_START) {
+                                    showContent = true
+                                }
 
                                 if (showContent) {
                                     ApplicationContent(

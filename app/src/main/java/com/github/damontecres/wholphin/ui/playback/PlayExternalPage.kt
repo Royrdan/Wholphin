@@ -32,6 +32,7 @@ import com.github.damontecres.wholphin.services.PlaylistCreator
 import com.github.damontecres.wholphin.services.StreamChoiceService
 import com.github.damontecres.wholphin.services.UserPreferencesService
 import com.github.damontecres.wholphin.ui.components.ErrorMessage
+import com.github.damontecres.wholphin.MainActivity
 import com.github.damontecres.wholphin.ui.components.LoadingPage
 import com.github.damontecres.wholphin.ui.findActivity
 import com.github.damontecres.wholphin.ui.indexOfFirstOrNull
@@ -119,6 +120,7 @@ class PlayExternalViewModel
 
         fun init(destination: Destination) {
             Timber.v("init called: %s", destination)
+            Log.i(TAG, "init dest=$destination launched=${launched.value}")
             state.update { it.copy(loading = LoadingState.Loading) }
             viewModelScope.launchDefault {
                 try {
@@ -360,6 +362,7 @@ class PlayExternalViewModel
         }
 
         fun onResult(result: ActivityResult) {
+            Log.i(TAG, "onResult ENTER code=${result.resultCode} savedItemId=${savedStateHandle.get<UUID?>(KEY_ID)}")
             viewModelScope.launchDefault {
                 val itemId = savedStateHandle.get<UUID?>(KEY_ID)
                 try {
@@ -515,14 +518,11 @@ fun PlayExternalPage(
             viewModelStoreOwner = LocalContext.current.findActivity() as AppCompatActivity,
         ),
 ) {
-    val launcher =
-        rememberLauncherForActivityResult(
-            contract = ActivityResultContracts.StartActivityForResult(),
-            onResult = viewModel::onResult,
-        )
+    val activity = LocalContext.current.findActivity() as MainActivity
 
     val state by viewModel.state.collectAsState()
     LaunchedEffect(Unit) {
+        Log.i("WholphinJP", "PlayExternalPage compose: launched=${viewModel.launched.value} dest=$destination")
         viewModel.init(destination)
     }
 
@@ -548,7 +548,7 @@ fun PlayExternalPage(
                     Timber.i("Launching external playback (token=%d)", state.launchToken)
                     viewModel.launched.update { true }
                     try {
-                        launcher.launch(state.intent)
+                        activity.launchExternalPlayer(state.intent)
                     } catch (ex: Exception) {
                         viewModel.reportException(ex)
                     }
