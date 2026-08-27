@@ -217,6 +217,18 @@ sealed interface AppPreference<Pref, T> {
                 summaryOff = R.string.disabled,
             )
 
+        val ShowUnreleased =
+            AppSwitchPreference<AppPreferences>(
+                title = R.string.show_unreleased,
+                defaultValue = false,
+                getter = { it.homePagePreferences.showUnreleased },
+                setter = { prefs, value ->
+                    prefs.updateHomePagePreferences { showUnreleased = value }
+                },
+                summaryOn = R.string.enabled,
+                summaryOff = R.string.disabled,
+            )
+
         val HomeClickToPlay =
             AppChoicePreference<AppPreferences, Boolean>(
                 title = R.string.continue_watching_click_behavior,
