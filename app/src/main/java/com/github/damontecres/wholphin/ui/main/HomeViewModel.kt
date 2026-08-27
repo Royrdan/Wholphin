@@ -32,7 +32,6 @@ import com.github.damontecres.wholphin.util.WholphinDispatchers
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
@@ -98,7 +97,8 @@ class HomeViewModel
                         )
                         _state.update {
                             it.copy(
-                                loadingState = if (refresh) LoadingState.Success else LoadingState.Loading,
+                                // Always show the page scaffold immediately; rows fill in progressively
+                                loadingState = LoadingState.Success,
                                 refreshState = LoadingState.Loading,
                                 settings = settings,
                                 homeRows =
@@ -160,46 +160,35 @@ class HomeViewModel
                                     }
                                 }
 
-                        if (refresh) {
-                            // Replace rows as they complete
-                            val remaining = deferred.withIndex().toMutableList()
-                            while (remaining.isNotEmpty()) {
-                                val (rowIndex, rowData) =
-                                    select {
-                                        // "Return" the first remaining that is completed
-                                        remaining
-                                            .forEach { (rowIndex, deferred) ->
-                                                deferred.onAwait { rowIndex to it }
-                                            }
-                                    }
-                                Timber.v("Got row data index=%s", rowIndex)
-                                remaining.removeIf { it.index == rowIndex }
-                                _state.update { state ->
-                                    val newRows =
-                                        state.homeRows.toMutableList().apply {
-                                            set(rowIndex, rowData)
+                        // Always fill rows progressively so the page shows at once and each row pops
+                        // in as it resolves, instead of blocking on the slowest row (Netflix-style).
+                        val remaining = deferred.withIndex().toMutableList()
+                        while (remaining.isNotEmpty()) {
+                            val (rowIndex, rowData) =
+                                select {
+                                    // "Return" the first remaining that is completed
+                                    remaining
+                                        .forEach { (rowIndex, deferred) ->
+                                            deferred.onAwait { rowIndex to it }
                                         }
-                                    state.copy(
-                                        homeRows = newRows,
-                                    )
                                 }
-                            }
-                            _state.update {
-                                it.copy(
-                                    loadingState = LoadingState.Success,
-                                    refreshState = LoadingState.Success,
+                            Timber.v("Got row data index=%s", rowIndex)
+                            remaining.removeIf { it.index == rowIndex }
+                            _state.update { state ->
+                                val newRows =
+                                    state.homeRows.toMutableList().apply {
+                                        set(rowIndex, rowData)
+                                    }
+                                state.copy(
+                                    homeRows = newRows,
                                 )
                             }
-                        } else {
-                            val rows = deferred.awaitAll()
-                            Timber.v("Got all rows")
-                            _state.update {
-                                it.copy(
-                                    loadingState = LoadingState.Success,
-                                    refreshState = LoadingState.Success,
-                                    homeRows = rows,
-                                )
-                            }
+                        }
+                        _state.update {
+                            it.copy(
+                                loadingState = LoadingState.Success,
+                                refreshState = LoadingState.Success,
+                            )
                         }
                         Timber.d("Home page load complete")
                     }

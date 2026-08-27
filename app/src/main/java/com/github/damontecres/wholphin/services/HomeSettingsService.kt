@@ -276,36 +276,135 @@ class HomeSettingsService
                     navDrawerService.getAllUserLibraries(userId, userDto?.tvAccess ?: false)
                 }
 
-            val includedIds =
-                libraries
-                    .mapIndexed { index, it ->
-                        val parentId = it.itemId
-                        val title = getRecentlyAddedTitle(it.name)
-                        if (it.collectionType == CollectionType.LIVETV) {
-                            HomeRowConfigDisplay(
-                                id = index,
-                                title = ResStringProvider(R.string.watch_live),
-                                config = HomeRowConfig.TvPrograms(),
-                            )
-                        } else {
-                            HomeRowConfigDisplay(
-                                id = index,
-                                title = title,
-                                config = HomeRowConfig.RecentlyAdded(parentId),
-                            )
+            // Netflix-style default layout. Order: continue watching, recommended (movies/shows),
+            // recently added, then taste-ranked genre rows (the genres the user actually watches, first).
+            val rows = mutableListOf<HomeRowConfigDisplay>()
+            var nextId = 0
+            fun add(
+                title: StringProvider,
+                config: HomeRowConfig,
+            ) {
+                rows += HomeRowConfigDisplay(nextId++, title, config)
+            }
+
+            val movieLib = libraries.firstOrNull { it.collectionType == CollectionType.MOVIES }
+            val showLib = libraries.firstOrNull { it.collectionType == CollectionType.TVSHOWS }
+
+            // 1. Continue watching + next up
+            add(ResStringProvider(R.string.combine_continue_next), HomeRowConfig.ContinueWatchingCombined())
+
+            // 2. Recommended (movies then shows) - driven by the user's watch history
+            movieLib?.let { add(ResArgStringProvider(R.string.suggestions_for, it.name), HomeRowConfig.Suggestions(it.itemId)) }
+            showLib?.let { add(ResArgStringProvider(R.string.suggestions_for, it.name), HomeRowConfig.Suggestions(it.itemId)) }
+
+            // 3. Recently added (movies, shows, then any other libraries / live tv)
+            movieLib?.let { add(getRecentlyAddedTitle(it.name), HomeRowConfig.RecentlyAdded(it.itemId)) }
+            showLib?.let { add(getRecentlyAddedTitle(it.name), HomeRowConfig.RecentlyAdded(it.itemId)) }
+            libraries
+                .filter { it != movieLib && it != showLib }
+                .forEach {
+                    if (it.collectionType == CollectionType.LIVETV) {
+                        add(ResStringProvider(R.string.watch_live), HomeRowConfig.TvPrograms())
+                    } else {
+                        add(getRecentlyAddedTitle(it.name), HomeRowConfig.RecentlyAdded(it.itemId))
+                    }
+                }
+
+            // 4. Taste-ranked genre rows: the categories the user watches most, first. Shows before
+            // movies since that is the heavier usage. Each row shows unplayed titles in that genre.
+            showLib?.let { lib ->
+                rankedGenres(userId, lib.itemId, BaseItemKind.SERIES, MAX_GENRE_ROWS).forEach { (gid, gname) ->
+                    add(StringStringProvider(gname), genreRow(gname, lib.itemId, BaseItemKind.SERIES, gid))
+                }
+            }
+            movieLib?.let { lib ->
+                rankedGenres(userId, lib.itemId, BaseItemKind.MOVIE, MAX_GENRE_ROWS).forEach { (gid, gname) ->
+                    add(StringStringProvider(gname), genreRow(gname, lib.itemId, BaseItemKind.MOVIE, gid))
+                }
+            }
+
+            return HomePageResolvedSettings(rows)
+        }
+
+        /**
+         * A single genre row of unplayed titles in [genreId], reusing the [HomeRowConfig.GetItems] engine.
+         */
+        private fun genreRow(
+            name: String,
+            parentId: UUID,
+            kind: BaseItemKind,
+            genreId: UUID,
+        ): HomeRowConfig.GetItems =
+            HomeRowConfig.GetItems(
+                name = name,
+                getItems =
+                    GetItemsRequest(
+                        parentId = parentId,
+                        includeItemTypes = listOf(kind),
+                        genreIds = listOf(genreId),
+                        isPlayed = false,
+                        recursive = true,
+                        // Indexed sort (newest first) instead of RANDOM: RANDOM forces the server to
+                        // shuffle the whole recursive set, which times out when many genre rows load
+                        // at once. "Newest in <genre>" is cheap and reads well as a Netflix-style row.
+                        sortBy = listOf(ItemSortBy.DATE_CREATED),
+                        sortOrder = listOf(SortOrder.DESCENDING),
+                        // Skip the expensive server-side total count; the row only needs the first page
+                        enableTotalRecordCount = false,
+                    ),
+            )
+
+        /**
+         * Rank the genres the user actually watches, most-played first, for a given library.
+         *
+         * Uses the user's played items (episodes for a series library) and tallies their genres.
+         */
+        private suspend fun rankedGenres(
+            userId: UUID,
+            parentId: UUID,
+            kind: BaseItemKind,
+            max: Int,
+        ): List<Pair<UUID, String>> =
+            try {
+                val historyKind = if (kind == BaseItemKind.SERIES) BaseItemKind.EPISODE else kind
+                val played =
+                    GetItemsRequestHandler
+                        .execute(
+                            api,
+                            GetItemsRequest(
+                                parentId = parentId,
+                                userId = userId,
+                                includeItemTypes = listOf(historyKind),
+                                recursive = true,
+                                isPlayed = true,
+                                fields = listOf(ItemFields.GENRES),
+                                sortBy = listOf(ItemSortBy.DATE_PLAYED),
+                                sortOrder = listOf(SortOrder.DESCENDING),
+                                limit = 500,
+                                enableTotalRecordCount = false,
+                                imageTypeLimit = 0,
+                            ),
+                        ).content.items
+                        .orEmpty()
+                val counts = LinkedHashMap<UUID, Int>()
+                val names = HashMap<UUID, String>()
+                played.forEach { item ->
+                    item.genreItems?.forEach { g ->
+                        val gname = g.id.let { names[it] } ?: g.name
+                        if (gname != null) {
+                            names[g.id] = gname
+                            counts[g.id] = (counts[g.id] ?: 0) + 1
                         }
                     }
-            val continueWatchingRow =
-                listOf(
-                    HomeRowConfigDisplay(
-                        id = includedIds.size + 1,
-                        title = ResStringProvider(R.string.combine_continue_next),
-                        config = HomeRowConfig.ContinueWatchingCombined(),
-                    ),
-                )
-            val rowConfig = continueWatchingRow + includedIds
-            return HomePageResolvedSettings(rowConfig)
-        }
+                }
+                counts.entries
+                    .sortedByDescending { it.value }
+                    .take(max)
+                    .mapNotNull { e -> names[e.key]?.let { e.key to it } }
+            } catch (ex: Exception) {
+                Timber.w(ex, "Could not rank genres for %s", parentId)
+                emptyList()
+            }
 
         /**
          * Create home page settings from the user's web UI home page settings
@@ -1176,6 +1275,9 @@ class HomeSettingsService
 
         companion object {
             const val CUSTOM_PREF_ID = "home_settings"
+
+            /** Max taste-ranked genre rows to generate per library in the default layout */
+            const val MAX_GENRE_ROWS = 6
         }
     }
 
