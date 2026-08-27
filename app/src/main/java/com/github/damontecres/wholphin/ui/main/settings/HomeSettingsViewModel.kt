@@ -592,6 +592,12 @@ class HomeSettingsViewModel
             ioScope.launchIO {
                 serverRepository.currentUser?.let { user ->
                     val rows = state.value.rows.map { it.config }
+                    // Never persist an empty layout (e.g. the editor closed before it finished
+                    // loading) - that would blank out the home page on the next launch.
+                    if (rows.isEmpty()) {
+                        Timber.w("Skipping saveToLocal: no rows to save")
+                        return@let
+                    }
                     val settings =
                         HomePageSettings(rows = rows, SUPPORTED_HOME_PAGE_SETTINGS_VERSION)
                     try {

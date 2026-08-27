@@ -38,9 +38,13 @@ import com.github.damontecres.wholphin.util.HomeRowLoadingState.Success
 import com.github.damontecres.wholphin.util.supportedHomeCollectionTypes
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -221,7 +225,9 @@ class HomeSettingsService
                 try {
                     val local = loadFromLocal(userId)
                     Timber.v("Found local? %s", local != null)
-                    local
+                    // Ignore an empty saved layout (e.g. persisted before load finished) and fall
+                    // through to the server / default so the home page can never end up blank.
+                    local?.takeIf { it.rows.isNotEmpty() }
                 } catch (ex: Exception) {
                     Timber.w(ex, "Error loading local settings")
                     // TODO show toast?
@@ -229,7 +235,7 @@ class HomeSettingsService
                 } ?: try {
                     val remote = loadFromServer(userId)
                     Timber.v("Found remote? %s", remote != null)
-                    remote
+                    remote?.takeIf { it.rows.isNotEmpty() }
                 } catch (ex: Exception) {
                     Timber.w(ex, "Error loading remote settings")
                     null
@@ -312,14 +318,30 @@ class HomeSettingsService
 
             // 4. Taste-ranked genre rows: the categories the user watches most, first. Shows before
             // movies since that is the heavier usage. Each row shows unplayed titles in that genre.
+            // Rank both libraries in parallel so this doesn't delay the first paint. Titles are
+            // suffixed ("Comedy Shows" / "Comedy Movies") so a genre shared by both isn't ambiguous.
+            val (showGenres, movieGenres) =
+                coroutineScope {
+                    val shows =
+                        async {
+                            showLib?.let { rankedGenres(userId, it.itemId, BaseItemKind.SERIES, MAX_GENRE_ROWS) }.orEmpty()
+                        }
+                    val movies =
+                        async {
+                            movieLib?.let { rankedGenres(userId, it.itemId, BaseItemKind.MOVIE, MAX_GENRE_ROWS) }.orEmpty()
+                        }
+                    shows.await() to movies.await()
+                }
             showLib?.let { lib ->
-                rankedGenres(userId, lib.itemId, BaseItemKind.SERIES, MAX_GENRE_ROWS).forEach { (gid, gname) ->
-                    add(StringStringProvider(gname), genreRow(gname, lib.itemId, BaseItemKind.SERIES, gid))
+                showGenres.forEach { (gid, gname) ->
+                    val label = "$gname Shows"
+                    add(StringStringProvider(label), genreRow(label, lib.itemId, BaseItemKind.SERIES, gid))
                 }
             }
             movieLib?.let { lib ->
-                rankedGenres(userId, lib.itemId, BaseItemKind.MOVIE, MAX_GENRE_ROWS).forEach { (gid, gname) ->
-                    add(StringStringProvider(gname), genreRow(gname, lib.itemId, BaseItemKind.MOVIE, gid))
+                movieGenres.forEach { (gid, gname) ->
+                    val label = "$gname Movies"
+                    add(StringStringProvider(label), genreRow(label, lib.itemId, BaseItemKind.MOVIE, gid))
                 }
             }
 
@@ -380,7 +402,8 @@ class HomeSettingsService
                                 fields = listOf(ItemFields.GENRES),
                                 sortBy = listOf(ItemSortBy.DATE_PLAYED),
                                 sortOrder = listOf(SortOrder.DESCENDING),
-                                limit = 500,
+                                // Recent 150 plays are plenty to gauge taste and keep this query light
+                                limit = 150,
                                 enableTotalRecordCount = false,
                                 imageTypeLimit = 0,
                             ),
@@ -1234,10 +1257,15 @@ class HomeSettingsService
                     val title = ResArgStringProvider(R.string.suggestions_for, library.name ?: "")
                     val itemKind = SuggestionsWorker.getTypeForCollection(library.collectionType)
                     if (itemKind != null) {
+                        // The suggestions flow first emits Loading (cold cache) then the real result
+                        // once the worker finishes. Wait for a settled value instead of grabbing the
+                        // initial Loading, else the row is stuck on "Loading" until a manual refresh.
                         val suggestions =
-                            suggestionService
-                                .getSuggestionsFlow(row.parentId, itemKind)
-                                .firstOrNull()
+                            withTimeoutOrNull(25_000L) {
+                                suggestionService
+                                    .getSuggestionsFlow(row.parentId, itemKind)
+                                    .first { it !is SuggestionsResource.Loading }
+                            }
                         when (suggestions) {
                             SuggestionsResource.Empty -> {
                                 Success(
