@@ -111,6 +111,7 @@ fun HomePage(
     val loading = state.loadingState
     val refreshing = state.refreshState
     val homeRows = state.homeRows
+    val loadGeneration = state.loadGeneration
 
     when (val state = loading) {
         is LoadingState.Error -> {
@@ -226,6 +227,8 @@ fun HomePage(
                 showLogo = preferences.appPreferences.interfacePreferences.showLogos,
                 showViewMore = true,
                 onClickViewMore = onClickViewMore,
+                onRequestRow = viewModel::loadRow,
+                loadGeneration = loadGeneration,
                 modifier = modifier,
             )
             overviewDialog?.let { info ->
@@ -299,6 +302,8 @@ fun HomePageContent(
         )
     },
     onClickViewMore: (RowColumn, HomeRowLoadingState.Success) -> Unit = { _, _ -> },
+    onRequestRow: (Int) -> Unit = {},
+    loadGeneration: Int = 0,
 ) {
     val focusedItem =
         remember(homeRows, position) {
@@ -374,6 +379,10 @@ fun HomePageContent(
                             .focusRestorer(),
                 ) {
                     itemsIndexed(homeRows) { rowIndex, row ->
+                        // Fetch this row's data only when it (nearly) scrolls into view. The LazyColumn
+                        // only composes on-screen items, so the first screen loads instantly and the
+                        // rest stream in as the user scrolls - Netflix-style lazy loading.
+                        LaunchedEffect(rowIndex, loadGeneration) { onRequestRow(rowIndex) }
                         val rowModifier =
                             Modifier
                                 .animateItem(placementSpec = null)
