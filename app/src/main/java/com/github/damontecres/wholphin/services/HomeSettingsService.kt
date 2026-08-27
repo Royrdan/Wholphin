@@ -719,7 +719,9 @@ class HomeSettingsService
             isRefresh: Boolean,
             usePaging: Boolean = false,
         ): HomeRowLoadingState =
-            when (row) {
+            filterUnreleased(
+                prefs,
+                when (row) {
                 is HomeRowConfig.ContinueWatching -> {
                     val resume =
                         latestNextUpService.getResume(
@@ -1317,19 +1319,28 @@ class HomeSettingsService
 
                 is HomeRowConfig.NewEpisodes -> {
                     val title = ResStringProvider(R.string.new_episodes)
-                    // Next unwatched episode for each series the user is watching. This is the reliable
-                    // signal for "new episodes from shows you watch" - filtering recently-added episodes
-                    // to watched series returns nothing on a big debrid library (drowned out by the
-                    // firehose of new content for series the user has never watched).
+                    // "Next up" for the shows you actually follow (the original, correct source) - but
+                    // only keep episodes that actually aired recently (within ~6 months). This stops
+                    // old episodes of long-running shows (e.g. restarting South Park at season 10) from
+                    // showing up as "new". Filter on the EPISODE's air date, not the series', so a
+                    // genuinely new episode of an old show still counts. Fetch extra since the filter
+                    // trims the list.
+                    val cutoff = LocalDateTime.now().minusMonths(6)
                     val items =
-                        latestNextUpService.getNextUp(
-                            userDto.id,
-                            limit,
-                            prefs.enableRewatchingNextUp,
-                            false,
-                            prefs.maxDaysNextUp,
-                            row.viewOptions.useSeries,
-                        )
+                        latestNextUpService
+                            .getNextUp(
+                                userDto.id,
+                                maxOf(limit * 6, 60),
+                                prefs.enableRewatchingNextUp,
+                                false,
+                                prefs.maxDaysNextUp,
+                                row.viewOptions.useSeries,
+                            ).filter { item ->
+                                item?.data?.premiereDate?.let { it >= cutoff } ?: false
+                            }
+                            // One episode per show (its next-up episode), then on to the next show.
+                            .distinctBy { it?.data?.seriesId }
+                            .take(limit)
                     Success(
                         title,
                         items,
@@ -1355,6 +1366,28 @@ class HomeSettingsService
                         showViewMore = items.size >= limit,
                     )
                 }
+                },
+            )
+
+        /**
+         * Client-side safety net: unless the user has opted in to seeing unreleased content, drop
+         * items whose premiere/air date is still in the future from any row. Backs up the
+         * server-side (Jellyfin) fix so not-yet-released titles never leak into the home view.
+         */
+        private fun filterUnreleased(
+            prefs: HomePagePreferences,
+            state: HomeRowLoadingState,
+        ): HomeRowLoadingState =
+            if (prefs.showUnreleased || state !is Success) {
+                state
+            } else {
+                val now = LocalDateTime.now()
+                state.copy(
+                    items =
+                        state.items.filterNot { item ->
+                            item?.data?.premiereDate?.let { it > now } ?: false
+                        },
+                )
             }
 
         companion object {

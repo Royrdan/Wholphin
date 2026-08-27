@@ -92,6 +92,18 @@ fun HomeSettingsGlobal(
             }
             item {
                 ComposablePreference(
+                    preference = AppPreference.ShowUnreleased,
+                    value = AppPreference.ShowUnreleased.getter.invoke(preferences),
+                    onValueChange = {
+                        val newPrefs = AppPreference.ShowUnreleased.setter.invoke(preferences, it)
+                        onPreferenceChange.invoke(newPrefs)
+                    },
+                    onNavigate = {},
+                    modifier = Modifier,
+                )
+            }
+            item {
+                ComposablePreference(
                     preference = AppPreference.HomeClickToPlay,
                     value = AppPreference.HomeClickToPlay.getter.invoke(preferences),
                     onValueChange = {

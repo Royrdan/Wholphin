@@ -340,6 +340,8 @@
     <string name="playback_overrides">Playback overrides</string>
     <string name="remember_selected_tab">Remember selected tabs</string>
     <string name="rewatch_next_up">Enable rewatching in next up</string>
+    <string name="show_unreleased">Show unreleased content</string>
+    <string name="show_unreleased_summary">When off, shows and movies that have not been released yet are hidden from the home page</string>
     <string name="seek_bar_steps">Seek bar steps</string>
     <string name="send_app_logs_summary">Useful for debugging</string>
     <string name="send_app_logs">Send app logs to current server</string>

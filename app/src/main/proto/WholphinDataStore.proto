@@ -102,6 +102,7 @@ message HomePagePreferences{
   bool combine_continue_next = 3 [deprecated = true];
   int32 max_days_next_up = 4;
   bool click_to_play = 5;
+  bool show_unreleased = 6;
 }
 
 enum ThemeSongVolume {
