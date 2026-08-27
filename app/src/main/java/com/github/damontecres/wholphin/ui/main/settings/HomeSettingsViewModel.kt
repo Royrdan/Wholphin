@@ -108,6 +108,8 @@ class HomeSettingsViewModel
                     it.copy(
                         libraries = libraries,
                         rows = currentSettings.rows,
+                        // Show the row list immediately; the per-row preview images fill in after.
+                        loading = LoadingState.Success,
                     )
                 }
                 fetchRowData()
