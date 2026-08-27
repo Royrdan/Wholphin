@@ -251,6 +251,22 @@ class HomeSettingsViewModel
                             )
                         }
 
+                        MetaRowType.NEW_EPISODES -> {
+                            HomeRowConfigDisplay(
+                                id = id,
+                                title = ResStringProvider(R.string.new_episodes),
+                                config = HomeRowConfig.NewEpisodes(),
+                            )
+                        }
+
+                        MetaRowType.WATCHLIST -> {
+                            HomeRowConfigDisplay(
+                                id = id,
+                                title = ResStringProvider(R.string.watchlist_title),
+                                config = HomeRowConfig.Watchlist(),
+                            )
+                        }
+
                         MetaRowType.FAVORITES,
                         MetaRowType.COLLECTION,
                         MetaRowType.PLAYLIST,
@@ -771,6 +787,14 @@ class HomeSettingsViewModel
 
                                 is HomeRowConfig.TvChannels -> {
                                     it.config.updateViewOptions(preset.liveTv)
+                                }
+
+                                is HomeRowConfig.NewEpisodes -> {
+                                    it.config.updateViewOptions(preset.continueWatching)
+                                }
+
+                                is HomeRowConfig.Watchlist -> {
+                                    it.config.updateViewOptions(preset.movieLibrary)
                                 }
                             }
                         it.copy(config = newConfig)

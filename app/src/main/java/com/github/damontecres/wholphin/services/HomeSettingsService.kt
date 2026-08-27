@@ -96,6 +96,7 @@ class HomeSettingsService
         private val imageUrlService: ImageUrlService,
         private val suggestionService: SuggestionService,
         private val displayPreferencesService: DisplayPreferencesService,
+        private val watchlistService: WatchlistService,
     ) {
         @OptIn(ExperimentalSerializationApi::class)
         val jsonParser =
@@ -297,9 +298,17 @@ class HomeSettingsService
             // 1. Continue watching + next up
             add(ResStringProvider(R.string.combine_continue_next), HomeRowConfig.ContinueWatchingCombined())
 
-            // 2. Recommended (movies then shows) - driven by the user's watch history
+            // 2. New episodes from shows the user actually watches
+            if (showLib != null) {
+                add(ResStringProvider(R.string.new_episodes), HomeRowConfig.NewEpisodes())
+            }
+
+            // 3. Recommended (movies then shows) - driven by the user's watch history
             movieLib?.let { add(ResArgStringProvider(R.string.suggestions_for, it.name), HomeRowConfig.Suggestions(it.itemId)) }
             showLib?.let { add(ResArgStringProvider(R.string.suggestions_for, it.name), HomeRowConfig.Suggestions(it.itemId)) }
+
+            // 4. Watchlist / My List
+            add(ResStringProvider(R.string.watchlist_title), HomeRowConfig.Watchlist())
 
             // 3. Recently added (movies, shows, then any other libraries / live tv)
             movieLib?.let { add(getRecentlyAddedTitle(it.name), HomeRowConfig.RecentlyAdded(it.itemId)) }
@@ -663,6 +672,14 @@ class HomeSettingsService
                         title = title,
                         config,
                     )
+                }
+
+                is HomeRowConfig.NewEpisodes -> {
+                    HomeRowConfigDisplay(id, ResStringProvider(R.string.new_episodes), config)
+                }
+
+                is HomeRowConfig.Watchlist -> {
+                    HomeRowConfigDisplay(id, ResStringProvider(R.string.watchlist_title), config)
                 }
             }
 
@@ -1296,6 +1313,47 @@ class HomeSettingsService
                             message = "Unsupported type ${library.collectionType}",
                         )
                     }
+                }
+
+                is HomeRowConfig.NewEpisodes -> {
+                    val title = ResStringProvider(R.string.new_episodes)
+                    // Next unwatched episode for each series the user is watching. This is the reliable
+                    // signal for "new episodes from shows you watch" - filtering recently-added episodes
+                    // to watched series returns nothing on a big debrid library (drowned out by the
+                    // firehose of new content for series the user has never watched).
+                    val items =
+                        latestNextUpService.getNextUp(
+                            userDto.id,
+                            limit,
+                            prefs.enableRewatchingNextUp,
+                            false,
+                            prefs.maxDaysNextUp,
+                            row.viewOptions.useSeries,
+                        )
+                    Success(
+                        title,
+                        items,
+                        row.viewOptions,
+                        rowType = row,
+                        showViewMore = items.size >= limit,
+                    )
+                }
+
+                is HomeRowConfig.Watchlist -> {
+                    val title = ResStringProvider(R.string.watchlist_title)
+                    val items =
+                        watchlistService
+                            .items(userDto.id, HomeItemFields)
+                            // Hide-but-keep: watched items drop out of view but stay on the list
+                            .filter { it.userData?.played != true }
+                            .map { BaseItem(it, row.viewOptions.useSeries) }
+                    Success(
+                        title,
+                        items,
+                        row.viewOptions,
+                        rowType = row,
+                        showViewMore = items.size >= limit,
+                    )
                 }
             }
 

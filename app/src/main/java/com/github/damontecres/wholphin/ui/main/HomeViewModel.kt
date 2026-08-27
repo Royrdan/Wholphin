@@ -19,6 +19,7 @@ import com.github.damontecres.wholphin.services.MediaReportService
 import com.github.damontecres.wholphin.services.NavDrawerService
 import com.github.damontecres.wholphin.services.NavigationManager
 import com.github.damontecres.wholphin.services.UserPreferencesService
+import com.github.damontecres.wholphin.services.WatchlistService
 import com.github.damontecres.wholphin.services.deleteItem
 import com.github.damontecres.wholphin.services.tvAccess
 import com.github.damontecres.wholphin.ui.data.RowColumn
@@ -64,6 +65,7 @@ class HomeViewModel
         private val userPreferencesService: UserPreferencesService,
         private val mediaManagementService: MediaManagementService,
         private val latestNextUpService: LatestNextUpService,
+        private val watchlistService: WatchlistService,
     ) : ViewModel() {
         private val _state = MutableStateFlow(HomeState.EMPTY)
         val state: StateFlow<HomeState> = _state
@@ -211,6 +213,18 @@ class HomeViewModel
                 reload()
             }
         }
+
+        fun addToWatchlist(itemId: UUID) =
+            viewModelScope.launch(ExceptionHandler(autoToast = true) + WholphinDispatchers.IO) {
+                watchlistService.add(itemId)
+                withContext(WholphinDispatchers.Main) { reload() }
+            }
+
+        fun removeFromWatchlist(itemId: UUID) =
+            viewModelScope.launch(ExceptionHandler(autoToast = true) + WholphinDispatchers.IO) {
+                watchlistService.remove(itemId)
+                withContext(WholphinDispatchers.Main) { reload() }
+            }
 
         fun updateBackdrop(item: BaseItem) {
             viewModelScope.launchIO {

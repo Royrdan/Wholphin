@@ -150,6 +150,8 @@ fun HomeSettingsPage(
                                             MetaRowType.CONTINUE_WATCHING,
                                             MetaRowType.NEXT_UP,
                                             MetaRowType.COMBINED_CONTINUE_WATCHING,
+                                            MetaRowType.NEW_EPISODES,
+                                            MetaRowType.WATCHLIST,
                                             -> {
                                                 addRow { viewModel.addRow(it) }
                                             }

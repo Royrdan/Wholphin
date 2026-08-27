@@ -157,6 +157,7 @@ fun HomePage(
                             row?.rowType is HomeRowConfig.ContinueWatching || row?.rowType is HomeRowConfig.ContinueWatchingCombined
                         val canRemoveNextUp =
                             row?.rowType is HomeRowConfig.NextUp || row?.rowType is HomeRowConfig.ContinueWatchingCombined
+                        val canRemoveWatchlist = row?.rowType is HomeRowConfig.Watchlist
                         showContextMenu =
                             ContextMenu.ForBaseItem(
                                 fromLongClick = true,
@@ -171,6 +172,7 @@ fun HomePage(
                                     ),
                                 canRemoveContinueWatching = canRemoveContinueWatching,
                                 canRemoveNextUp = canRemoveNextUp,
+                                canRemoveWatchlist = canRemoveWatchlist,
                                 actions =
                                     ContextMenuActions(
                                         navigateTo = viewModel.navigationManager::navigateTo,
@@ -195,6 +197,8 @@ fun HomePage(
                                         },
                                         onClearChosenStreams = {},
                                         onClickRemoveFromNextUp = viewModel::removeFromNextUp,
+                                        onClickAddWatchlist = viewModel::addToWatchlist,
+                                        onClickRemoveWatchlist = viewModel::removeFromWatchlist,
                                     ),
                             )
                     }

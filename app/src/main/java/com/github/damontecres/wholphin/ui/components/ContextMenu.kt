@@ -47,6 +47,7 @@ sealed interface ContextMenu {
         val canDelete: Boolean,
         val canRemoveContinueWatching: Boolean,
         val canRemoveNextUp: Boolean,
+        val canRemoveWatchlist: Boolean = false,
         val actions: ContextMenuActions,
     ) : ContextMenu
 
@@ -87,6 +88,8 @@ data class ContextMenuActions(
     val onClickGoTo: (BaseItem) -> Unit = { navigateTo(it.destination()) },
     val onClickRemoveFromNextUp: (BaseItem) -> Unit = {},
     val onClickAddToQueue: (BaseItem) -> Unit = {},
+    val onClickAddWatchlist: (UUID) -> Unit = {},
+    val onClickRemoveWatchlist: (UUID) -> Unit = {},
 )
 
 data class PersonContextActions(
@@ -205,6 +208,7 @@ fun ContextMenu(
                 canDelete = contextMenu.canDelete,
                 canRemoveContinueWatching = contextMenu.canRemoveContinueWatching,
                 canRemoveNextUp = contextMenu.canRemoveNextUp,
+                canRemoveWatchlist = contextMenu.canRemoveWatchlist,
                 actions = actions,
                 onChooseVersion = {
                     chooseVersion =
@@ -330,6 +334,7 @@ private fun buildContextMenuItems(
     canDelete: Boolean,
     canRemoveContinueWatching: Boolean,
     canRemoveNextUp: Boolean,
+    canRemoveWatchlist: Boolean,
     actions: ContextMenuActions,
     onChooseVersion: () -> Unit,
     onChooseTracks: (MediaStreamType) -> Unit,
@@ -540,6 +545,29 @@ private fun buildContextMenuItems(
                 actions.onClickFavorite.invoke(item.id, !favorite)
             },
         )
+        // Watchlist / My List: remove option when the item is already on the list, otherwise offer
+        // to add movies & series.
+        if (canRemoveWatchlist) {
+            add(
+                DialogItem(
+                    text = R.string.remove_from_watchlist,
+                    iconStringRes = R.string.fa_tag,
+                    dismissOnClick = true,
+                ) {
+                    actions.onClickRemoveWatchlist.invoke(item.id)
+                },
+            )
+        } else if (item.type == BaseItemKind.MOVIE || item.type == BaseItemKind.SERIES) {
+            add(
+                DialogItem(
+                    text = R.string.add_to_watchlist,
+                    iconStringRes = R.string.fa_tag,
+                    dismissOnClick = true,
+                ) {
+                    actions.onClickAddWatchlist.invoke(item.id)
+                },
+            )
+        }
         item.data.albumId?.let { albumId ->
             add(
                 DialogItem(

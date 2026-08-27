@@ -193,6 +193,32 @@ sealed interface HomeRowConfig {
     ) : HomeRowConfig {
         override fun updateViewOptions(viewOptions: HomeRowViewOptions): GetItems = this.copy(viewOptions = viewOptions)
     }
+
+    /**
+     * Newest unwatched episodes from series the user actually watches (not all new episodes)
+     */
+    @Serializable
+    @SerialName("NewEpisodes")
+    data class NewEpisodes(
+        override val viewOptions: HomeRowViewOptions =
+            HomeRowViewOptions(
+                heightDp = Cards.HEIGHT_EPISODE,
+                aspectRatio = AspectRatio.WIDE,
+            ),
+    ) : HomeRowConfig {
+        override fun updateViewOptions(viewOptions: HomeRowViewOptions): NewEpisodes = this.copy(viewOptions = viewOptions)
+    }
+
+    /**
+     * The user's watch-later list, backed by a Jellyfin playlist. Watched items are hidden.
+     */
+    @Serializable
+    @SerialName("Watchlist")
+    data class Watchlist(
+        override val viewOptions: HomeRowViewOptions = HomeRowViewOptions(),
+    ) : HomeRowConfig {
+        override fun updateViewOptions(viewOptions: HomeRowViewOptions): Watchlist = this.copy(viewOptions = viewOptions)
+    }
 }
 
 /**
