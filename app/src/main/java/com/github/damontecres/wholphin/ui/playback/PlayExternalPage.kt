@@ -523,7 +523,12 @@ fun PlayExternalPage(
     val state by viewModel.state.collectAsState()
     LaunchedEffect(Unit) {
         Log.i("WholphinJP", "PlayExternalPage compose: launched=${viewModel.launched.value} dest=$destination")
-        viewModel.init(destination)
+        // If a playback is already in flight (e.g. this page was recomposed while an external player
+        // is up), don't re-init - that would rebuild the queue and relaunch, racing the auto-advance
+        // and flicking between episodes. The activity-level result handler drives the return instead.
+        if (!viewModel.launched.value) {
+            viewModel.init(destination)
+        }
     }
 
     when (val l = state.loading) {

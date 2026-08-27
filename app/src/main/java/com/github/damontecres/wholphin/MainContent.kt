@@ -117,7 +117,13 @@ fun MainContent(
                                     showContent = true
                                 }
 
-                                if (showContent) {
+                                // Always keep the app composed. Swapping it out for the privacy
+                                // spinner (below) on background tore down and rebuilt the whole app -
+                                // including the external-player page - on every Just Player round-trip,
+                                // which re-ran its init and relaunched, making episodes flick back and
+                                // forth / replay the wrong one. Instead we draw an opaque overlay on
+                                // top when hidden, so nothing unmounts.
+                                Box(modifier = Modifier.fillMaxSize()) {
                                     ApplicationContent(
                                         user = current.user,
                                         server = current.server,
@@ -125,15 +131,18 @@ fun MainContent(
                                         preferences = preferences,
                                         modifier = Modifier.fillMaxSize(),
                                     )
-                                } else {
-                                    Box(
-                                        modifier = Modifier.size(200.dp),
-                                        contentAlignment = Alignment.Center,
-                                    ) {
-                                        CircularProgressIndicator(
-                                            color = MaterialTheme.colorScheme.border,
-                                            modifier = Modifier.align(Alignment.Center),
-                                        )
+                                    if (!showContent) {
+                                        Box(
+                                            modifier =
+                                                Modifier
+                                                    .fillMaxSize()
+                                                    .background(Color.Black),
+                                            contentAlignment = Alignment.Center,
+                                        ) {
+                                            CircularProgressIndicator(
+                                                color = MaterialTheme.colorScheme.border,
+                                            )
+                                        }
                                     }
                                 }
                             }
