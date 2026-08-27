@@ -327,15 +327,24 @@ fun HomePageContent(
                     rowFocusRequesters.getOrNull(index)?.tryRequestFocus()
                     firstFocused = true
                 } else {
-                    // Waiting for the first home row to load, then focus on it
-                    homeRows
-                        .indexOfFirstOrNull { it is HomeRowLoadingState.Success && it.items.isNotEmpty() }
-                        ?.let {
-                            rowFocusRequesters[it].tryRequestFocus()
-                            firstFocused = true
-                            delay(50)
-                            listState.scrollToItem(it)
+                    // Focus the top-most row that has content, but only once every row above it has
+                    // settled - so a fast-loading lower row (e.g. Recently Added) can't steal focus
+                    // and scroll the list past Continue Watching while it is still loading.
+                    val firstWithItems =
+                        homeRows.indexOfFirstOrNull {
+                            it is HomeRowLoadingState.Success && it.items.isNotEmpty()
                         }
+                    val topSettled =
+                        firstWithItems != null &&
+                            homeRows.take(firstWithItems).all {
+                                it is HomeRowLoadingState.Success || it is HomeRowLoadingState.Error
+                            }
+                    if (firstWithItems != null && topSettled) {
+                        rowFocusRequesters[firstWithItems].tryRequestFocus()
+                        firstFocused = true
+                        delay(50)
+                        listState.scrollToItem(firstWithItems)
+                    }
                 }
             }
         }
