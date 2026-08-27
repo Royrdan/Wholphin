@@ -45,6 +45,7 @@ import kotlinx.coroutines.withContext
 import org.jellyfin.sdk.api.client.exception.InvalidStatusException
 import org.jellyfin.sdk.model.api.BaseItemKind
 import org.jellyfin.sdk.model.api.UserDto
+import org.jellyfin.sdk.model.api.UserItemDataDto
 import timber.log.Timber
 import java.util.UUID
 import javax.inject.Inject
@@ -199,9 +200,9 @@ class HomeViewModel
             played: Boolean,
         ) = viewModelScope.launch(ExceptionHandler() + WholphinDispatchers.IO) {
             favoriteWatchManager.setWatched(itemId, played)
-            withContext(WholphinDispatchers.Main) {
-                reload()
-            }
+            // Update the card in place instead of reloading the whole page. A full reload reset every
+            // row to Pending and stole focus (it jumped to the side menu and re-fetched everything).
+            updateItemUserData(itemId) { it.copy(played = played) }
         }
 
         fun setFavorite(
@@ -209,22 +210,92 @@ class HomeViewModel
             favorite: Boolean,
         ) = viewModelScope.launch(ExceptionHandler() + WholphinDispatchers.IO) {
             favoriteWatchManager.setFavorite(itemId, favorite)
-            withContext(WholphinDispatchers.Main) {
-                reload()
-            }
+            updateItemUserData(itemId) { it.copy(isFavorite = favorite) }
         }
 
         fun addToWatchlist(itemId: UUID) =
             viewModelScope.launch(ExceptionHandler(autoToast = true) + WholphinDispatchers.IO) {
                 watchlistService.add(itemId)
-                withContext(WholphinDispatchers.Main) { reload() }
+                // Only refresh the "My List" row(s); leave the rest (and focus) untouched.
+                withContext(WholphinDispatchers.Main) { reloadWatchlistRows() }
             }
 
         fun removeFromWatchlist(itemId: UUID) =
             viewModelScope.launch(ExceptionHandler(autoToast = true) + WholphinDispatchers.IO) {
                 watchlistService.remove(itemId)
-                withContext(WholphinDispatchers.Main) { reload() }
+                // Drop the card in place. You remove an item while focused INSIDE the My List row, so
+                // reloading the row (blanking it to Pending) would steal focus / look like a refresh.
+                removeItemFromWatchlistRows(itemId)
             }
+
+        /** Remove a single item from the watchlist ("My List") row(s) without a reload. */
+        private fun removeItemFromWatchlistRows(itemId: UUID) {
+            _state.update { state ->
+                state.copy(
+                    homeRows =
+                        state.homeRows.map { row ->
+                            if (row is HomeRowLoadingState.Success && row.rowType is HomeRowConfig.Watchlist) {
+                                row.copy(items = row.items.filterNot { it?.id == itemId })
+                            } else {
+                                row
+                            }
+                        },
+                )
+            }
+        }
+
+        /** Update a single item's user-data (watched/favorite) wherever it appears, in place. */
+        private fun updateItemUserData(
+            itemId: UUID,
+            transform: (UserItemDataDto) -> UserItemDataDto,
+        ) {
+            _state.update { state ->
+                state.copy(
+                    homeRows =
+                        state.homeRows.map { row ->
+                            if (row is HomeRowLoadingState.Success && row.items.any { it?.id == itemId }) {
+                                row.copy(
+                                    items =
+                                        row.items.map { item ->
+                                            val ud = item?.data?.userData
+                                            if (item != null && item.id == itemId && ud != null) {
+                                                item.copy(data = item.data.copy(userData = transform(ud)))
+                                            } else {
+                                                item
+                                            }
+                                        },
+                                )
+                            } else {
+                                row
+                            }
+                        },
+                )
+            }
+        }
+
+        /** Reload only the watchlist ("My List") rows so add/remove shows immediately without a full,
+         * focus-stealing page reload. */
+        private fun reloadWatchlistRows() {
+            val indices =
+                state.value.settings.rows.mapIndexedNotNull { index, r ->
+                    if (r.config is HomeRowConfig.Watchlist) index else null
+                }
+            if (indices.isEmpty()) return
+            _state.update { st ->
+                st.copy(
+                    homeRows =
+                        st.homeRows.toMutableList().apply {
+                            indices.forEach { i ->
+                                if (i < size) set(i, HomeRowLoadingState.Pending(EmptyStringProvider))
+                            }
+                        },
+                )
+            }
+            indices.forEach { i ->
+                requestedRows.remove(i)
+                loadRow(i)
+            }
+        }
 
         fun updateBackdrop(item: BaseItem) {
             viewModelScope.launchIO {
