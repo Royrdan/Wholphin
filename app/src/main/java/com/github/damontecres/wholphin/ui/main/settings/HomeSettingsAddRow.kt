@@ -38,6 +38,8 @@ fun HomeSettingsAddRow(
                     MetaRowType.CONTINUE_WATCHING,
                     MetaRowType.NEXT_UP,
                     MetaRowType.COMBINED_CONTINUE_WATCHING,
+                    MetaRowType.NEW_EPISODES,
+                    MetaRowType.WATCHLIST,
                 ),
             ) { index, type ->
                 HomeSettingsListItem(
@@ -97,6 +99,8 @@ enum class MetaRowType(
     CONTINUE_WATCHING(R.string.continue_watching),
     NEXT_UP(R.string.next_up),
     COMBINED_CONTINUE_WATCHING(R.string.combine_continue_next),
+    NEW_EPISODES(R.string.new_episodes),
+    WATCHLIST(R.string.watchlist_title),
     FAVORITES(R.string.favorites),
     DISCOVER(R.string.discover),
     COLLECTION(R.string.collection),
