@@ -14,6 +14,7 @@ import com.github.damontecres.wholphin.data.model.BaseItem
 import com.github.damontecres.wholphin.preferences.AppPreferences
 import com.github.damontecres.wholphin.preferences.UserPreferences
 import com.github.damontecres.wholphin.ui.data.AddPlaylistViewModel
+import com.github.damontecres.wholphin.ui.data.WatchlistViewModel
 import com.github.damontecres.wholphin.ui.data.ItemDetailsDialog
 import com.github.damontecres.wholphin.ui.data.ItemDetailsDialogInfo
 import com.github.damontecres.wholphin.ui.detail.PlaylistDialog
@@ -51,10 +52,14 @@ class ContextMenuUtils(
      * Composes the context menu when needed
      */
     @Composable
-    fun Compose(playlistViewModel: AddPlaylistViewModel = hiltViewModel()) {
+    fun Compose(
+        playlistViewModel: AddPlaylistViewModel = hiltViewModel(),
+        watchlistViewModel: WatchlistViewModel = hiltViewModel(),
+    ) {
         var overviewDialog by remember { mutableStateOf<ItemDetailsDialogInfo?>(null) }
         var showPlaylistDialog by remember { mutableStateOf<Optional<UUID>>(Optional.absent()) }
         val playlistState by playlistViewModel.playlistState.collectAsState()
+        val watchlistIds by watchlistViewModel.watchlistIds.collectAsState()
 
         overviewDialog?.let { info ->
             ItemDetailsDialog(
@@ -64,6 +69,9 @@ class ContextMenuUtils(
             )
         }
         showContextMenu?.let { (position, item) ->
+            // Whether this item is already on the watchlist, so the menu shows Add vs Remove
+            // (works everywhere the shared context menu is used, just like the Favorite toggle).
+            val inWatchlist = item.id in watchlistIds
             val contextActions =
                 remember {
                     ContextMenuActions(
@@ -91,10 +99,12 @@ class ContextMenuUtils(
                             // Not supported on this page
                         },
                         onClickAddToQueue = playlistViewModel::addToQueue,
+                        onClickAddWatchlist = watchlistViewModel::add,
+                        onClickRemoveWatchlist = watchlistViewModel::remove,
                     )
                 }
             val contextMenu =
-                remember {
+                remember(inWatchlist) {
                     ContextMenu.ForBaseItem(
                         fromLongClick = true,
                         item = item,
@@ -104,6 +114,7 @@ class ContextMenuUtils(
                         canDelete = provider.canDelete(item, preferences.appPreferences),
                         canRemoveContinueWatching = false,
                         canRemoveNextUp = false,
+                        canRemoveWatchlist = inWatchlist,
                         actions = contextActions,
                     )
                 }

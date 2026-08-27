@@ -344,6 +344,29 @@ private fun buildContextMenuItems(
     onClickPlayWith: () -> Unit,
 ): List<DialogItem> =
     buildList {
+        // Watchlist / My List first, for quick one-press access: remove when the item is already on
+        // the list, otherwise offer to add movies & series.
+        if (contextMenu.canRemoveWatchlist) {
+            add(
+                DialogItem(
+                    text = R.string.remove_from_watchlist,
+                    iconStringRes = R.string.fa_tag,
+                    dismissOnClick = true,
+                ) {
+                    actions.onClickRemoveWatchlist.invoke(item.id)
+                },
+            )
+        } else if (item.type == BaseItemKind.MOVIE || item.type == BaseItemKind.SERIES) {
+            add(
+                DialogItem(
+                    text = R.string.add_to_watchlist,
+                    iconStringRes = R.string.fa_tag,
+                    dismissOnClick = true,
+                ) {
+                    actions.onClickAddWatchlist.invoke(item.id)
+                },
+            )
+        }
         // Songs should not show Go to
         if (contextMenu.showGoTo && item.type != BaseItemKind.AUDIO) {
             add(
@@ -556,29 +579,6 @@ private fun buildContextMenuItems(
                 actions.onClickFavorite.invoke(item.id, !favorite)
             },
         )
-        // Watchlist / My List: remove option when the item is already on the list, otherwise offer
-        // to add movies & series.
-        if (contextMenu.canRemoveWatchlist) {
-            add(
-                DialogItem(
-                    text = R.string.remove_from_watchlist,
-                    iconStringRes = R.string.fa_tag,
-                    dismissOnClick = true,
-                ) {
-                    actions.onClickRemoveWatchlist.invoke(item.id)
-                },
-            )
-        } else if (item.type == BaseItemKind.MOVIE || item.type == BaseItemKind.SERIES) {
-            add(
-                DialogItem(
-                    text = R.string.add_to_watchlist,
-                    iconStringRes = R.string.fa_tag,
-                    dismissOnClick = true,
-                ) {
-                    actions.onClickAddWatchlist.invoke(item.id)
-                },
-            )
-        }
         item.data.albumId?.let { albumId ->
             add(
                 DialogItem(
