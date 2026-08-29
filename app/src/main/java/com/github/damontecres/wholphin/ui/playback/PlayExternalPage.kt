@@ -45,6 +45,8 @@ import com.github.damontecres.wholphin.util.LoadingState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
 import org.jellyfin.sdk.api.client.ApiClient
@@ -63,9 +65,26 @@ import org.jellyfin.sdk.model.extensions.inWholeTicks
 import org.jellyfin.sdk.model.extensions.ticks
 import timber.log.Timber
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.UUID
 import javax.inject.Inject
 import kotlin.time.Duration.Companion.milliseconds
+
+// --- resolve-in-Wholphin additions ---
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.unit.dp
+import androidx.tv.material3.MaterialTheme
+import androidx.tv.material3.Text
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.jellyfin.sdk.model.api.MediaProtocol
 
 /**
  * External-player playback with Wholphin-driven queue support.
@@ -102,6 +121,29 @@ class PlayExternalViewModel
 
         /** Ordered queue of item ids to play through the external player. Held in memory (VM-scoped). */
         private var queue: List<UUID> = emptyList()
+
+        // --- next-episode pre-warm ---
+        // A short while after an item starts playing (PREWARM_DELAY_MS), we resolve the NEXT queue
+        // item's debrid link in the background and stash it here. When play-next fires, playItemAt
+        // reuses it instead of resolving live, so the jump is instant. Best-effort: if it's missing
+        // or stale, playItemAt just resolves normally. The delay doubles as a guard so quick
+        // browse-in/out of an episode never triggers a resolve (no debrid hammering).
+        private data class Prewarmed(
+            val itemId: UUID,
+            val url: String,
+            val atMs: Long,
+        )
+
+        private var prewarmed: Prewarmed? = null
+        private var prewarmJob: Job? = null
+
+        // Wall-clock time (ms) of the last external-player launch; onResult uses it to detect a bogus
+        // instant "completion" from the relaunch race (external player relaunched before it tore down).
+        private var lastLaunchMs: Long = 0L
+        // Consecutive fast-fail ("relaunch race") retries for the current item; reset when the item
+        // changes or a genuine result arrives. Lets a transient race self-heal before we give up.
+        private var retryItemId: UUID? = null
+        private var retryCount: Int = 0
 
         // Local resume store. Jellyfin can't persist a resume position for items with null
         // RunTimeTicks (common for debrid/.strm content), so we keep our own keyed by item id.
@@ -217,6 +259,7 @@ class PlayExternalViewModel
         ) {
             if (index !in queue.indices) {
                 Timber.v("No item at index %d, finishing queue", index)
+                cancelPrewarm()
                 navigationManager.goBack()
                 state.update { PlayExternalState() }
                 launched.update { false }
@@ -239,6 +282,7 @@ class PlayExternalViewModel
             val plc = streamChoiceService.getPlaybackLanguageChoice(item.data)
             if (mediaSource == null) {
                 Timber.w("Media source is null for %s", itemId)
+                cancelPrewarm()
                 navigationManager.goBack()
                 state.update { PlayExternalState() }
                 launched.update { false }
@@ -278,13 +322,60 @@ class PlayExternalViewModel
                         ).toUri()
                 }
 
+            // jf-resolve / debrid .strm sources carry a resolver URL as the media source path
+            // (Protocol=Http, IsRemote=true, path=".../api/stream/resolve/..."). Rather than hand the
+            // external player the Jellyfin proxy URL — which makes Jellyfin trigger the resolve and
+            // hides any failure behind a black screen — we resolve it HERE: a single no-redirect GET
+            // returns a 302 whose Location is the real debrid CDN link. That lets us show "finding
+            // source" and surface any error in our own UI before ever launching the player.
+            val resolverPath = mediaSource.path
             val uri =
-                api.videosApi
-                    .getVideoStreamUrl(
-                        itemId = item.id,
-                        mediaSourceId = mediaSource.id,
-                        static = true,
-                    ).toUri()
+                if (mediaSource.protocol == MediaProtocol.HTTP &&
+                    resolverPath?.contains("/api/stream/resolve/") == true
+                ) {
+                    val warm = consumePrewarm(itemId)
+                    if (warm != null) {
+                        // Pre-warmed by the previous item: skip the resolve (and the modal) entirely.
+                        Log.i(TAG, "prewarm HIT item=$itemId -> ${warm.take(90)}")
+                        warm.toUri()
+                    } else {
+                        state.update { it.copy(loading = LoadingState.Loading, statusMessage = "Finding source…") }
+                        Log.i(TAG, "resolving via jfresolve item=$itemId path=$resolverPath")
+                        val ticker = startStatusTicker()
+                        val r =
+                            try {
+                                resolveDirectUrl(resolverPath)
+                            } finally {
+                                ticker.cancel()
+                            }
+                        when (r) {
+                            is ResolveResult.Success -> {
+                                Log.i(TAG, "resolved item=$itemId -> ${r.url.take(90)}")
+                                r.url.toUri()
+                            }
+
+                            is ResolveResult.Error -> {
+                                Log.i(TAG, "resolve FAILED item=$itemId code=${r.code} reason=${r.reason}")
+                                val msg = buildResolveErrorMessage(resolverPath, r)
+                                state.update {
+                                    it.copy(
+                                        loading = LoadingState.Error(msg, null),
+                                        statusMessage = null,
+                                    )
+                                }
+                                launched.update { false }
+                                return
+                            }
+                        }
+                    }
+                } else {
+                    api.videosApi
+                        .getVideoStreamUrl(
+                            itemId = item.id,
+                            mediaSourceId = mediaSource.id,
+                            static = true,
+                        ).toUri()
+                }
             val playerId = prefs.appPreferences.playbackPreferences.externalPlayer
             // Make sure player is available, user could have uninstalled it
             val foundPlayer =
@@ -357,9 +448,218 @@ class PlayExternalViewModel
                     loading = LoadingState.Success,
                     intent = intent,
                     launchToken = it.launchToken + 1,
+                    statusMessage = null,
                 )
             }
+
+            // Record launch time so onResult can spot a bogus instant "completion" (relaunch race).
+            lastLaunchMs = System.currentTimeMillis()
+
+            // Kick off the background pre-warm of the *next* item (if any).
+            schedulePrewarm(index + 1)
         }
+
+        /**
+         * Resolve a jf-resolve/debrid resolver URL to its final direct CDN link. The resolver replies
+         * with a 302 whose Location header is the real (range-capable, stable) debrid URL, so we issue
+         * a single GET with redirects DISABLED and read Location. Runs on IO; a generous read timeout
+         * covers jf-resolve's candidate walk + ffprobe validation. On any non-3xx we pull the
+         * FastAPI {"detail": ...} body so the UI can show a real reason instead of a black screen.
+         */
+        private suspend fun resolveDirectUrl(rawUrl: String): ResolveResult =
+            withContext(Dispatchers.IO) {
+                var conn: HttpURLConnection? = null
+                try {
+                    conn =
+                        (URL(rawUrl).openConnection() as HttpURLConnection).apply {
+                            instanceFollowRedirects = false
+                            requestMethod = "GET"
+                            connectTimeout = RESOLVE_CONNECT_TIMEOUT_MS
+                            readTimeout = RESOLVE_READ_TIMEOUT_MS
+                        }
+                    val code = conn.responseCode
+                    if (code in 300..399) {
+                        val location = conn.getHeaderField("Location")
+                        if (location.isNullOrBlank()) {
+                            ResolveResult.Error(code, "resolver returned no location")
+                        } else {
+                            ResolveResult.Success(location)
+                        }
+                    } else {
+                        val body =
+                            runCatching {
+                                (conn.errorStream ?: conn.inputStream)
+                                    ?.bufferedReader()
+                                    ?.use { it.readText() }
+                                    ?.take(500)
+                            }.getOrNull()
+                        ResolveResult.Error(code, extractDetail(body) ?: "HTTP $code")
+                    }
+                } catch (ex: Exception) {
+                    ResolveResult.Error(-1, ex.message ?: ex.javaClass.simpleName ?: "network error")
+                } finally {
+                    conn?.disconnect()
+                }
+            }
+
+        /** Pull the {"detail": "..."} message out of a FastAPI JSON error body, if present. */
+        private fun extractDetail(body: String?): String? {
+            if (body.isNullOrBlank()) return null
+            return runCatching {
+                org.json.JSONObject(body).optString("detail").takeIf { it.isNotBlank() }
+            }.getOrNull()
+        }
+
+        /**
+         * Schedule a background pre-warm of the queue item at [nextIndex]. After PREWARM_DELAY_MS
+         * (which also guards against browse-in/out spam) we resolve that item's debrid link and cache
+         * it. Cancels any previously scheduled pre-warm so at most one is ever in flight.
+         */
+        private fun schedulePrewarm(nextIndex: Int) {
+            prewarmJob?.cancel()
+            if (nextIndex !in queue.indices) return
+            val nextId = queue[nextIndex]
+            prewarmJob =
+                viewModelScope.launchDefault {
+                    delay(PREWARM_DELAY_MS)
+                    val path = runCatching { resolverPathFor(nextId) }.getOrNull()
+                    if (path == null) {
+                        Log.i(TAG, "prewarm skip (not a resolver item) next=$nextId")
+                        return@launchDefault
+                    }
+                    Log.i(TAG, "prewarm START next=$nextId")
+                    when (val r = runCatching { resolveDirectUrl(path) }.getOrNull()) {
+                        is ResolveResult.Success -> {
+                            prewarmed = Prewarmed(nextId, r.url, System.currentTimeMillis())
+                            Log.i(TAG, "prewarm READY next=$nextId -> ${r.url.take(90)}")
+                        }
+
+                        is ResolveResult.Error ->
+                            Log.i(TAG, "prewarm miss next=$nextId code=${r.code} reason=${r.reason}")
+
+                        null ->
+                            Log.i(TAG, "prewarm aborted next=$nextId")
+                    }
+                }
+        }
+
+        /**
+         * Resolve the resolver-path (jf-resolve URL) for [itemId] without launching anything, mirroring
+         * the source selection playItemAt does. Returns null if the item isn't a jf-resolve/debrid
+         * source (nothing worth pre-warming — local media resolves instantly).
+         */
+        private suspend fun resolverPathFor(itemId: UUID): String? {
+            val item = BaseItem(api.userLibraryApi.getItem(itemId).content)
+            val playbackConfig =
+                serverRepository.currentUser?.let { user ->
+                    itemPlaybackDao.getItem(user, itemId)?.let { if (it.sourceId != null) it else null }
+                }
+            val mediaSource = streamChoiceService.chooseSource(item.data, playbackConfig) ?: return null
+            val path = mediaSource.path
+            return if (mediaSource.protocol == MediaProtocol.HTTP &&
+                path?.contains("/api/stream/resolve/") == true
+            ) {
+                path
+            } else {
+                null
+            }
+        }
+
+        /**
+         * Return a fresh pre-warmed URL for [itemId] and consume it (one-shot), or null if there's no
+         * match or it's older than PREWARM_TTL_MS (kept safely under the debrid link's ~60-min life).
+         */
+        private fun consumePrewarm(itemId: UUID): String? {
+            val p = prewarmed ?: return null
+            prewarmed = null
+            return if (p.itemId == itemId && System.currentTimeMillis() - p.atMs < PREWARM_TTL_MS) {
+                p.url
+            } else {
+                null
+            }
+        }
+
+        /** Cancel any pending pre-warm and drop a cached link (used when the queue stops). */
+        private fun cancelPrewarm() {
+            prewarmJob?.cancel()
+            prewarmJob = null
+            prewarmed = null
+        }
+
+        /**
+         * While a resolve is in flight, escalate the loading message over time so the user can see it's
+         * actively working rather than a frozen spinner. Caller cancels the returned Job when done.
+         */
+        private fun startStatusTicker(): Job =
+            viewModelScope.launchDefault {
+                delay(8_000)
+                state.update { it.copy(statusMessage = "Still searching — checking providers…") }
+                delay(17_000) // ~25s in total
+                state.update { it.copy(statusMessage = "Source provider slow to respond…") }
+            }
+
+        /**
+         * Compose a human-readable resolve-failure message: classify the failure (timeout vs
+         * unreachable vs HTTP error) and, best-effort, ask jf-resolve which providers are down so the
+         * user sees the real cause (e.g. "TorBox down") instead of a bare "timeout".
+         */
+        private suspend fun buildResolveErrorMessage(
+            resolverPath: String,
+            err: ResolveResult.Error,
+        ): String {
+            val head =
+                when {
+                    err.code == -1 && err.reason.contains("timeout", ignoreCase = true) ->
+                        "No source found — jf-resolve didn't respond within ${RESOLVE_READ_TIMEOUT_MS / 1000}s."
+                    err.code == -1 ->
+                        "Couldn't reach jf-resolve (${err.reason})."
+                    err.code in 400..599 ->
+                        "No playable source (jf-resolve ${err.code}: ${err.reason})."
+                    else ->
+                        "Couldn't find a playable source (${err.reason})."
+                }
+            val providers = fetchProviderHealth(resolverPath)
+            return if (providers != null) "$head\n$providers" else head
+        }
+
+        /**
+         * Ask jf-resolve's /providers endpoint which debrid/indexer providers are healthy. Returns a
+         * short one-line summary, or null if the endpoint isn't reachable (e.g. older jf-resolve).
+         */
+        private suspend fun fetchProviderHealth(resolverPath: String): String? =
+            withContext(Dispatchers.IO) {
+                val base = resolverPath.substringBefore("/api/stream/", "")
+                if (base.isBlank()) return@withContext null
+                var conn: HttpURLConnection? = null
+                try {
+                    conn =
+                        (URL("$base/api/stream/providers").openConnection() as HttpURLConnection).apply {
+                            requestMethod = "GET"
+                            connectTimeout = 4_000
+                            readTimeout = 8_000
+                        }
+                    if (conn.responseCode != 200) return@withContext null
+                    val body = conn.inputStream.bufferedReader().use { it.readText() }
+                    val json = org.json.JSONObject(body)
+                    val provider = json.optString("provider", "debrid")
+                    val debridName =
+                        if (provider.equals("rd", ignoreCase = true)) "Real-Debrid" else "TorBox"
+                    fun fmt(
+                        name: String,
+                        o: org.json.JSONObject?,
+                    ): String {
+                        val st = o?.optString("status") ?: "unknown"
+                        if (st == "ok") return "$name ✓"
+                        val extra = o?.optString("message").orEmpty()
+                        return "$name ✗ $extra".trim()
+                    }
+                    "Providers: ${fmt(debridName, json.optJSONObject("debrid"))} · ${fmt("Zilean", json.optJSONObject("zilean"))}"
+                } catch (ex: Exception) {
+                    null
+                } finally {
+                    conn?.disconnect()
+                }
+            }
 
         fun onResult(result: ActivityResult) {
             Log.i(TAG, "onResult ENTER code=${result.resultCode} savedItemId=${savedStateHandle.get<UUID?>(KEY_ID)}")
@@ -433,6 +733,43 @@ class PlayExternalViewModel
                         }
                         Timber.v("Result position: %s (completed=%s)", position?.milliseconds, completed)
 
+                        // Guard against the relaunch race: when the external player is relaunched within
+                        // ~1s of closing, it can open the next item and instantly return a bogus
+                        // "playback_completion" (sub-second elapsed). Trusting it would falsely mark the
+                        // episode watched and auto-skip it. Treat an implausibly fast completion as a
+                        // failed launch: retry the SAME item once after a settle delay, and only surface
+                        // an error if it fails again. Nothing has been marked/reported at this point.
+                        val elapsedMs = System.currentTimeMillis() - lastLaunchMs
+                        if (completed && elapsedMs in 0 until MIN_REAL_PLAY_MS) {
+                            if (itemId != retryItemId) {
+                                retryItemId = itemId
+                                retryCount = 0
+                            }
+                            retryCount++
+                            Log.i(TAG, "SUSPECT fast completion item=$itemId elapsedMs=$elapsedMs attempt=$retryCount/$MAX_RELAUNCH_RETRIES")
+                            if (retryCount <= MAX_RELAUNCH_RETRIES) {
+                                // Transient relaunch race — wait a growing beat, then retry the SAME item.
+                                delay(RELAUNCH_SETTLE_MS * retryCount)
+                                playItemAt(currentIndex, overridePositionMs = null)
+                            } else {
+                                // Still won't start after several tries — surface it instead of looping
+                                // or silently skipping.
+                                retryItemId = null
+                                retryCount = 0
+                                cancelPrewarm()
+                                state.update {
+                                    it.copy(
+                                        loading = LoadingState.Error("Couldn't play this episode — try again.", null),
+                                    )
+                                }
+                                launched.update { false }
+                            }
+                            return@launchDefault
+                        }
+                        // Genuine result — reset the retry counter.
+                        retryItemId = null
+                        retryCount = 0
+
                         // Only report the stop to Jellyfin when we actually know the item's runtime.
                         // For null-runtime items (debrid/.strm) Jellyfin treats ANY reported stop
                         // position as ">=90% => played" and marks it watched (and zeroes the resume) —
@@ -458,6 +795,15 @@ class PlayExternalViewModel
                             clearLocalResume(itemId)
                             val r = runCatching { api.playStateApi.markPlayedItem(itemId) }
                             Log.i(TAG, "completion markPlayed ok=${r.isSuccess} err=${r.exceptionOrNull()?.message} item=$itemId")
+                        } else if (position != null && jpDurationMs > 0 &&
+                            position >= jpDurationMs.toLong() * WATCHED_PERCENT / 100
+                        ) {
+                            // Watched past the ~90% mark then backed out before the very end. Null-runtime
+                            // (debrid/.strm) items can't use Jellyfin's server-side 90%-watched rule, so we
+                            // apply it here using the duration Just Player reports on exit.
+                            clearLocalResume(itemId)
+                            val r = runCatching { api.playStateApi.markPlayedItem(itemId) }
+                            Log.i(TAG, "near-end markPlayed ok=${r.isSuccess} pos=$position dur=$jpDurationMs item=$itemId")
                         } else if (position != null && position > RESUME_MIN_MS) {
                             saveLocalResume(itemId, position)
                             Log.i(TAG, "saveLocalResume item=$itemId pos=$position")
@@ -472,8 +818,12 @@ class PlayExternalViewModel
                     Log.i(TAG, "advance? completed=$completed next=$nextIndex inRange=${nextIndex in queue.indices} queueSize=${queue.size}")
                     if (completed && nextIndex in queue.indices) {
                         Timber.i("Auto-advancing external playback to index %d", nextIndex)
+                        // Settle: let the external player fully close before relaunching, or it can
+                        // return a bogus instant completion for the next item (the relaunch race).
+                        delay(RELAUNCH_SETTLE_MS)
                         playItemAt(nextIndex, overridePositionMs = null)
                     } else {
+                        cancelPrewarm()
                         navigationManager.goBack()
                         state.update { PlayExternalState() }
                         launched.update { false }
@@ -494,18 +844,58 @@ class PlayExternalViewModel
         companion object {
             private const val TAG = "WholphinJP"
             private const val RESUME_MIN_MS = 10_000L
+
+            // Watched fraction (%) at/above which a backed-out null-runtime item is marked played,
+            // using the duration Just Player reports on exit (Jellyfin can't do this without a runtime).
+            private const val WATCHED_PERCENT = 90L
             private const val KEY_ID = "itemId"
             private const val KEY_MEDIA_ID = "mediaId"
             private const val KEY_INDEX = "queueIndex"
             private const val KEY_RUNTIME_TICKS = "runtimeTicks"
+
+            // jf-resolve's candidate walk + ffprobe gate can take a while on a cold item, so give the
+            // read a wide window (must exceed jf-resolve's stream_probe_timeout_seconds, default 10s).
+            private const val RESOLVE_CONNECT_TIMEOUT_MS = 15_000
+            private const val RESOLVE_READ_TIMEOUT_MS = 45_000
+
+            // Pre-warm the next item this long after the current one starts. Also a guard: browsing
+            // in/out of an episode faster than this never triggers a background resolve.
+            private const val PREWARM_DELAY_MS = 180_000L // 3 min
+
+            // Discard a pre-warmed link older than this — kept comfortably under the debrid link's
+            // ~60-min validity (and jf-resolve's 60-min resolve cache).
+            private const val PREWARM_TTL_MS = 2_700_000L // 45 min
+
+            // A "completion" that returns faster than this is treated as a failed launch (the relaunch
+            // race), not a real finish — real episodes run for minutes. See onResult.
+            private const val MIN_REAL_PLAY_MS = 5_000L
+            // Settle time to let the external player fully close before we relaunch the next item.
+            private const val RELAUNCH_SETTLE_MS = 2_500L
+            // How many times to re-try a suspect fast-completion (relaunch race) before giving up.
+            // Retry delay grows (RELAUNCH_SETTLE_MS * attempt) so a stubborn race gets a bigger gap.
+            private const val MAX_RELAUNCH_RETRIES = 3
         }
     }
+
+/** Result of resolving a jf-resolve URL to its final direct debrid link. */
+sealed interface ResolveResult {
+    data class Success(
+        val url: String,
+    ) : ResolveResult
+
+    data class Error(
+        val code: Int,
+        val reason: String,
+    ) : ResolveResult
+}
 
 data class PlayExternalState(
     val loading: LoadingState = LoadingState.Pending,
     val intent: Intent = Intent(),
     // Incremented each time a new item is ready to launch; drives the launcher effect.
     val launchToken: Int = 0,
+    // Non-null while resolving a debrid source; shown in the loading modal ("Finding source…").
+    val statusMessage: String? = null,
 )
 
 @Composable
@@ -538,7 +928,12 @@ fun PlayExternalPage(
 
         LoadingState.Loading,
         -> {
-            LoadingPage(modifier)
+            val msg = state.statusMessage
+            if (msg != null) {
+                ResolvingPage(msg, modifier)
+            } else {
+                LoadingPage(modifier)
+            }
         }
 
         is LoadingState.Error -> {
@@ -559,6 +954,33 @@ fun PlayExternalPage(
                     }
                 }
             }
+        }
+    }
+}
+
+/** Full-screen loading modal that shows a spinner plus a status line (e.g. "Finding source…"). */
+@Composable
+private fun ResolvingPage(
+    message: String,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = modifier.fillMaxSize(),
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            CircularProgressIndicator(
+                color = MaterialTheme.colorScheme.border,
+                modifier = Modifier.size(48.dp),
+            )
+            Text(
+                text = message,
+                color = MaterialTheme.colorScheme.onSurface,
+                style = MaterialTheme.typography.titleMedium,
+            )
         }
     }
 }
