@@ -171,6 +171,10 @@ class PlaybackViewModel
         private val playlistMutex = Mutex()
         private var playlistJob: Job? = null
 
+        // Escalating "Finding source…" ticker while a debrid source resolves (server-side during
+        // getPostedPlaybackInfo, then the quick client resolve). Cancelled on success/error.
+        private var loadStatusTicker: Job? = null
+
         val controllerViewState =
             ControllerViewState(
                 AppPreference.ControllerTimeout.defaultValue,
@@ -601,6 +605,19 @@ class PlaybackViewModel
             }
 
         /**
+         * While a debrid resolve is in flight, escalate the loading message over time so the user can
+         * see it's actively working rather than a frozen spinner. Caller cancels the returned Job when
+         * the resolve completes. Mirrors the external-player path's ticker.
+         */
+        private fun startResolveStatusTicker(): Job =
+            viewModelScope.launchDefault {
+                delay(8_000)
+                _state.update { it.copy(statusMessage = "Still searching — checking providers…") }
+                delay(17_000) // ~25s total
+                _state.update { it.copy(statusMessage = "Source provider slow to respond…") }
+            }
+
+        /**
          * Change which streams (ie audio or subtitle) are active
          */
         @OptIn(UnstableApi::class)
@@ -644,6 +661,14 @@ class PlaybackViewModel
                     positionMs,
                 )
 
+                // A debrid .strm is resolved server-side during getPostedPlaybackInfo below and that can
+                // take many seconds (jf-resolve candidate walk + validation). Show the "Finding source…"
+                // page with escalating status for that whole wait — not just the quick client resolve
+                // after it. Cancelled once we reach the player (or on error).
+                loadStatusTicker?.cancel()
+                _state.update { it.copy(loading = LoadingState.Loading, statusMessage = "Finding source…") }
+                loadStatusTicker = startResolveStatusTicker()
+
                 val maxBitrate =
                     preferences.appPreferences.playbackPreferences.maxBitrate
                         .takeIf { it > 0 } ?: AppPreference.DEFAULT_BITRATE
@@ -678,7 +703,10 @@ class PlaybackViewModel
                         )
                 if (response.errorCode != null) {
                     Timber.e("Error in PostedPlaybackInfo: %s", response.errorCode)
-                    _state.update { it.copy(loading = LoadingState.Error(response.errorCode?.serialName)) }
+                    loadStatusTicker?.cancel()
+                    _state.update {
+                        it.copy(loading = LoadingState.Error(response.errorCode?.serialName), statusMessage = null)
+                    }
                     return@withContext
                 }
                 val source = response.mediaSources.firstOrNull()
@@ -692,34 +720,34 @@ class PlaybackViewModel
                                     // external-player path) so ExoPlayer receives a range-capable direct
                                     // URL instead of a resolver URL it cannot follow (cross-protocol 302)
                                     // or a Jellyfin proxy URL that makes the server loop on the redirect.
-                                    // Show the "finding source" loading screen while we resolve: a cold
-                                    // (uncached) title takes a few seconds, and on auto-play-next the
-                                    // previous item is already in Success state, so without this the
-                                    // resolve would happen with nothing on screen.
-                                    _state.update { it.copy(loading = LoadingState.Loading) }
-                                    when (val r = resolveDebridDirectUrl(remotePath)) {
+                                    // The "Finding source…" page + ticker were already started before
+                                    // getPostedPlaybackInfo above (that's where the long cold-resolve wait
+                                    // is); this client resolve is usually instant (server just cached it).
+                                    when (val resolved = resolveDebridDirectUrl(remotePath)) {
                                         is StrmResolveResult.Success -> {
                                             Timber.i(
                                                 "jf-resolve direct url for %s -> %s",
                                                 source.id,
-                                                r.url.take(90),
+                                                resolved.url.take(90),
                                             )
-                                            r.url
+                                            resolved.url
                                         }
 
                                         is StrmResolveResult.Error -> {
                                             Timber.e(
                                                 "jf-resolve failed for %s: code=%d %s",
                                                 source.id,
-                                                r.code,
-                                                r.reason,
+                                                resolved.code,
+                                                resolved.reason,
                                             )
+                                            loadStatusTicker?.cancel()
                                             _state.update {
                                                 it.copy(
                                                     loading =
                                                         LoadingState.Error(
-                                                            "Couldn't find a playable source (${r.reason})",
+                                                            "Couldn't find a playable source (${resolved.reason})",
                                                         ),
+                                                    statusMessage = null,
                                                 )
                                             }
                                             return@withContext
@@ -744,12 +772,14 @@ class PlaybackViewModel
                             source.transcodingUrl?.let(api::createUrl)
                         }
                     if (mediaUrl.isNullOrBlank()) {
+                        loadStatusTicker?.cancel()
                         _state.update {
                             it.copy(
                                 loading =
                                     LoadingState.Error(
                                         "Unable to get media URL from the server. Do you have permission to view and/or transcode?",
                                     ),
+                                statusMessage = null,
                             )
                         }
                         return@withContext
@@ -854,9 +884,11 @@ class PlaybackViewModel
                         player.addListener(activityListener)
                         this@PlaybackViewModel.activityListener = activityListener
 
+                        loadStatusTicker?.cancel()
                         _state.update {
                             it.copy(
                                 loading = LoadingState.Success,
+                                statusMessage = null,
                                 currentPlayback = playback,
                             )
                         }

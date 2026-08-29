@@ -132,7 +132,13 @@ fun PlaybackPage(
         LoadingState.Pending,
         LoadingState.Loading,
         -> {
-            LoadingPage(modifier.background(Color.Black))
+            val msg = state.statusMessage
+            if (msg != null) {
+                // Debrid .strm resolve in progress — show the "Finding source…" status page.
+                SourceResolvingPage(msg, modifier.background(Color.Black))
+            } else {
+                LoadingPage(modifier.background(Color.Black))
+            }
         }
 
         LoadingState.Success -> {
