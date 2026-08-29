@@ -86,6 +86,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.jellyfin.sdk.model.api.MediaSegmentDto
+import org.jellyfin.sdk.model.api.MediaSegmentType
 import org.jellyfin.sdk.model.extensions.ticks
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -211,7 +212,12 @@ fun PlaybackControls(
                     TextButton(
                         stringRes = segment.type.skipStringRes,
                         onClick = {
-                            player.seekTo(segment.endTicks.ticks.inWholeMilliseconds)
+                            if (segment.type == MediaSegmentType.OUTRO && player.duration > 0) {
+                                // Skip credits = cap to the end so playback advances to the next episode.
+                                player.seekTo(player.duration)
+                            } else {
+                                player.seekTo(segment.endTicks.ticks.inWholeMilliseconds)
+                            }
                         },
                         modifier =
                             Modifier
