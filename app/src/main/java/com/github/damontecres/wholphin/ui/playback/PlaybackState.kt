@@ -15,6 +15,8 @@ import org.jellyfin.sdk.model.api.MediaSegmentDto
 
 data class PlaybackState(
     val loading: LoadingState = LoadingState.Loading,
+    // Non-null while resolving a debrid source; shown under the loading spinner ("Finding source…").
+    val statusMessage: String? = null,
     val currentMediaInfo: CurrentMediaInfo = CurrentMediaInfo.EMPTY,
     val currentPlayback: CurrentPlayback? = null,
     val currentItemPlayback: ItemPlayback? = null,
