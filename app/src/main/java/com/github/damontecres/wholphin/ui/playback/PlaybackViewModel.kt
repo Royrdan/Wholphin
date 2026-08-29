@@ -107,6 +107,7 @@ import org.jellyfin.sdk.api.sockets.subscribe
 import org.jellyfin.sdk.model.DeviceInfo
 import org.jellyfin.sdk.model.api.BaseItemKind
 import org.jellyfin.sdk.model.api.ImageType
+import org.jellyfin.sdk.model.api.MediaSegmentDto
 import org.jellyfin.sdk.model.api.MediaSegmentType
 import org.jellyfin.sdk.model.api.MediaStreamType
 import org.jellyfin.sdk.model.api.MediaType
@@ -608,7 +609,7 @@ class PlaybackViewModel
                     player.prepare()
                     player.play()
                 }
-                listenForSegments(item.id)
+                listenForSegments(item.id, mediaSource?.path)
                 watchPlaybackPosition()
                 return@withContext true
             }
@@ -696,6 +697,9 @@ class PlaybackViewModel
                         is StrmResolveResult.Error ->
                             Timber.i("prewarm miss next=%s code=%d %s", nextItemId, r.code, r.reason)
                     }
+                    // Kick off intro/credits detection for the next episode so its segments are cached
+                    // in jf-resolve before it plays (this episode acts as the fingerprint reference).
+                    triggerJfResolveSegments(path)
                 }
         }
 
@@ -1306,19 +1310,25 @@ class PlaybackViewModel
         /**
          * This sets up a coroutine to periodically check whether the current playback progress is within a media segment (intro, outro, etc)
          */
-        private fun listenForSegments(itemId: UUID) {
+        private fun listenForSegments(itemId: UUID, resolverPath: String? = null) {
             segmentJob?.cancel()
             segmentJob =
                 viewModelScope.launchIO {
                     val prefs = preferences.appPreferences.playbackPreferences
-                    val segments by api.mediaSegmentsApi.getItemSegments(itemId)
-                    if (segments.items.isNotEmpty()) {
+                    // Debrid .strm has no Jellyfin media segments — source intro/credits from
+                    // jf-resolve (chromaprint). Falls back to Jellyfin segments for local content.
+                    val segmentItems: List<MediaSegmentDto> =
+                        fetchJfResolveSegments(resolverPath, itemId) ?: run {
+                            val segments by api.mediaSegmentsApi.getItemSegments(itemId)
+                            segments.items
+                        }
+                    if (segmentItems.isNotEmpty()) {
                         while (isActive) {
                             delay(500L)
                             val currentTicks =
                                 onMain { player.currentPosition.milliseconds.inWholeTicks }
                             val currentSegment =
-                                segments.items
+                                segmentItems
                                     .firstOrNull {
                                         it.type != MediaSegmentType.UNKNOWN && currentTicks >= it.startTicks && currentTicks < it.endTicks
                                     }
