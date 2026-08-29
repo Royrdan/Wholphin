@@ -101,6 +101,7 @@ import org.jellyfin.sdk.api.client.extensions.mediaSegmentsApi
 import org.jellyfin.sdk.api.client.extensions.sessionApi
 import org.jellyfin.sdk.api.client.extensions.trickplayApi
 import org.jellyfin.sdk.api.client.extensions.userLibraryApi
+import org.jellyfin.sdk.model.api.MediaProtocol
 import org.jellyfin.sdk.api.client.extensions.videosApi
 import org.jellyfin.sdk.api.sockets.subscribe
 import org.jellyfin.sdk.model.DeviceInfo
@@ -174,6 +175,13 @@ class PlaybackViewModel
         // Escalating "Finding source…" ticker while a debrid source resolves (server-side during
         // getPostedPlaybackInfo, then the quick client resolve). Cancelled on success/error.
         private var loadStatusTicker: Job? = null
+
+        // Per-item position watcher (driven off the PLAYER's real duration, since debrid .strm has null
+        // Jellyfin runtime): pre-warms the next episode ~PRELOAD_LEAD_MS before the end and drives the
+        // Next Up card for DURING_CREDITS (which is outro-segment based and never fires for debrid).
+        private var positionWatchJob: Job? = null
+        private var prewarmJob: Job? = null
+        private var prewarmedNext: PrewarmedUrl? = null
 
         val controllerViewState =
             ControllerViewState(
@@ -601,8 +609,102 @@ class PlaybackViewModel
                     player.play()
                 }
                 listenForSegments(item.id)
+                watchPlaybackPosition()
                 return@withContext true
             }
+
+        /**
+         * Per-item position watcher (started in [play]). Works off the PLAYER's real duration because
+         * debrid .strm items have a null Jellyfin runtime, so anything keyed on server runtime never
+         * fires. Two jobs:
+         *  - ~[PRELOAD_LEAD_MS] before the end, pre-warm the next item's debrid link (also warms
+         *    jf-resolve's server cache so the next getPostedPlaybackInfo is fast — no 30s wait).
+         *  - for DURING_CREDITS, show the Next Up card in the last [NEXTUP_TAIL_MS]. The normal
+         *    DURING_CREDITS path is outro-media-segment based, and debrid content has no segments.
+         */
+        private fun watchPlaybackPosition() {
+            positionWatchJob?.cancel()
+            positionWatchJob =
+                viewModelScope.launchDefault {
+                    var prewarmTriggered = false
+                    while (isActive) {
+                        delay(1_000L)
+                        val (durationMs, positionMs) =
+                            withContext(WholphinDispatchers.Main) {
+                                player.duration to player.currentPosition
+                            }
+                        if (durationMs <= 0L || durationMs == C.TIME_UNSET) continue
+                        val remainingMs = durationMs - positionMs
+                        if (remainingMs <= 0L) continue
+
+                        // Pre-warm the next episode once, ~PRELOAD_LEAD_MS before the end.
+                        if (!prewarmTriggered && remainingMs <= PRELOAD_LEAD_MS) {
+                            prewarmTriggered = true
+                            (state.value.nextItem() as? PlaylistItem.Media)?.let { next ->
+                                prewarmNext(next.item.id)
+                            }
+                        }
+
+                        // Next Up card for DURING_CREDITS on debrid (no outro segments): show in the tail.
+                        val prefs = preferences.appPreferences.playbackPreferences
+                        if (prefs.showNextUpWhen == ShowNextUpWhen.DURING_CREDITS &&
+                            state.value.hasNext &&
+                            state.value.nextUp == null &&
+                            remainingMs <= NEXTUP_TAIL_MS
+                        ) {
+                            (state.value.nextItem() as? PlaylistItem.Media)?.let { next ->
+                                Timber.v("Position watcher showing Next Up (tail) for %s", next.id)
+                                _state.update { it.copy(nextUp = next.item) }
+                            }
+                        }
+                    }
+                }
+        }
+
+        /**
+         * Resolve the jf-resolve resolver path for [itemId] (mirrors source selection) or null if it
+         * isn't a debrid/.strm source worth pre-warming (local media resolves instantly).
+         */
+        private suspend fun resolverPathFor(itemId: UUID): String? {
+            val item = BaseItem(api.userLibraryApi.getItem(itemId).content)
+            val playbackConfig =
+                serverRepository.currentUser?.let { user ->
+                    itemPlaybackDao.getItem(user, itemId)?.let { if (it.sourceId != null) it else null }
+                }
+            val mediaSource = streamChoiceService.chooseSource(item.data, playbackConfig) ?: return null
+            val path = mediaSource.path
+            return if (mediaSource.protocol == MediaProtocol.HTTP && path.isJfResolvePath()) path else null
+        }
+
+        /** Background pre-warm of [nextItemId]'s debrid link; stashes it and warms jf-resolve's cache. */
+        private fun prewarmNext(nextItemId: UUID) {
+            prewarmJob?.cancel()
+            prewarmJob =
+                viewModelScope.launchDefault {
+                    val path = runCatching { resolverPathFor(nextItemId) }.getOrNull()
+                    if (path == null) {
+                        Timber.v("prewarm skip (not a resolver item) next=%s", nextItemId)
+                        return@launchDefault
+                    }
+                    Timber.i("prewarm START next=%s", nextItemId)
+                    when (val r = resolveDebridDirectUrl(path)) {
+                        is StrmResolveResult.Success -> {
+                            prewarmedNext = PrewarmedUrl(nextItemId, r.url, System.currentTimeMillis())
+                            Timber.i("prewarm READY next=%s", nextItemId)
+                        }
+
+                        is StrmResolveResult.Error ->
+                            Timber.i("prewarm miss next=%s code=%d %s", nextItemId, r.code, r.reason)
+                    }
+                }
+        }
+
+        /** One-shot fetch of a fresh pre-warmed URL for [itemId], or null if absent/stale. */
+        private fun consumePrewarm(itemId: UUID): String? {
+            val p = prewarmedNext ?: return null
+            prewarmedNext = null
+            return if (p.itemId == itemId && System.currentTimeMillis() - p.atMs < PREWARM_TTL_MS) p.url else null
+        }
 
         /**
          * While a debrid resolve is in flight, escalate the loading message over time so the user can
@@ -723,17 +825,22 @@ class PlaybackViewModel
                                     // The "Finding source…" page + ticker were already started before
                                     // getPostedPlaybackInfo above (that's where the long cold-resolve wait
                                     // is); this client resolve is usually instant (server just cached it).
-                                    when (val resolved = resolveDebridDirectUrl(remotePath)) {
-                                        is StrmResolveResult.Success -> {
-                                            Timber.i(
-                                                "jf-resolve direct url for %s -> %s",
-                                                source.id,
-                                                resolved.url.take(90),
-                                            )
-                                            resolved.url
-                                        }
+                                    val prewarmedUrl = consumePrewarm(itemId)
+                                    if (prewarmedUrl != null) {
+                                        Timber.i("jf-resolve prewarm HIT for %s", itemId)
+                                        prewarmedUrl
+                                    } else {
+                                        when (val resolved = resolveDebridDirectUrl(remotePath)) {
+                                            is StrmResolveResult.Success -> {
+                                                Timber.i(
+                                                    "jf-resolve direct url for %s -> %s",
+                                                    source.id,
+                                                    resolved.url.take(90),
+                                                )
+                                                resolved.url
+                                            }
 
-                                        is StrmResolveResult.Error -> {
+                                            is StrmResolveResult.Error -> {
                                             Timber.e(
                                                 "jf-resolve failed for %s: code=%d %s",
                                                 source.id,
@@ -751,6 +858,7 @@ class PlaybackViewModel
                                                 )
                                             }
                                             return@withContext
+                                            }
                                         }
                                     }
                                 } else {
@@ -1189,6 +1297,7 @@ class PlaybackViewModel
          */
         private fun resetSegmentState() {
             segmentJob?.cancel()
+            positionWatchJob?.cancel()
             autoSkippedSegments.clear()
             outroShownSegments.clear()
             _state.update { it.copy(currentSegment = null) }
@@ -1767,3 +1876,13 @@ class PlaybackViewModel
             }
         }
     }
+
+private const val PRELOAD_LEAD_MS = 5 * 60 * 1000L // pre-warm the next episode 5 min before the end
+private const val NEXTUP_TAIL_MS = 60 * 1000L // show Next Up card in the last 60s (credits) for debrid
+private const val PREWARM_TTL_MS = 45 * 60 * 1000L // debrid links live ~60 min; keep the stash under that
+
+private data class PrewarmedUrl(
+    val itemId: UUID,
+    val url: String,
+    val atMs: Long,
+)
