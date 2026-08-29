@@ -58,7 +58,6 @@ import com.github.damontecres.wholphin.ui.playback.CurrentPlayback
 import com.github.damontecres.wholphin.ui.playback.PlaybackDialogType
 import org.jellyfin.sdk.model.api.ImageType
 import org.jellyfin.sdk.model.api.MediaSegmentDto
-import org.jellyfin.sdk.model.api.MediaSegmentType
 import org.jellyfin.sdk.model.api.TrickplayInfo
 import kotlin.time.Duration
 
@@ -122,28 +121,6 @@ fun PlaybackOverlay(
         modifier = modifier,
         contentAlignment = Alignment.BottomCenter,
     ) {
-        // Auto-popping Skip button over the video — visible even when the controls are hidden, so the
-        // user doesn't have to open the controls to skip an intro / credits.
-        AnimatedVisibility(
-            visible = currentSegment != null && !controllerViewState.controlsVisible,
-            enter = fadeIn(),
-            exit = fadeOut(),
-            modifier = Modifier.align(Alignment.BottomEnd).padding(48.dp),
-        ) {
-            currentSegment?.let { segment ->
-                SkipSegmentButton(
-                    type = segment.type,
-                    onClick = {
-                        if (segment.type == MediaSegmentType.OUTRO && player.duration > 0) {
-                            // Skip credits = cap to the end so playback advances to the next episode.
-                            player.seekTo(player.duration)
-                        } else {
-                            player.seekTo(segment.endTicks / 10_000)
-                        }
-                    },
-                )
-            }
-        }
         AnimatedVisibility(
             visible = controllerViewState.controlsVisible && !showDebugInfo,
             enter = fadeIn(),

@@ -645,8 +645,9 @@ class PlaybackViewModel
                                 prewarmNext(next.item.id)
                             }
                         }
-                        // NOTE: the Next Up card is driven by the credits (OUTRO) segment + STATE_ENDED,
-                        // NOT a fixed time tail — a fixed tail auto-advanced no-segment episodes early.
+
+                        // (Next Up during credits is handled by the outro media segment + the existing
+                        // DURING_CREDITS logic, not a fixed time tail.)
                     }
                 }
         }
@@ -686,7 +687,7 @@ class PlaybackViewModel
                         is StrmResolveResult.Error ->
                             Timber.i("prewarm miss next=%s code=%d %s", nextItemId, r.code, r.reason)
                     }
-                    // Kick off intro/credits detection for the next episode so its segments are cached
+                    // Also warm intro/credits detection for the next episode so its segments are cached
                     // in jf-resolve before it plays (this episode acts as the fingerprint reference).
                     triggerJfResolveSegments(path)
                 }
@@ -1261,8 +1262,7 @@ class PlaybackViewModel
 
                                 prefs.showNextUpWhen != ShowNextUpWhen.NEXT_UP_NEVER -> {
                                     Timber.v("Setting next up to ${nextItem.id}")
-                                    // At the real end — allow auto-advance (countdown) now.
-                                    _state.update { it.copy(nextUp = nextItem.item, nextUpAutoAdvance = true) }
+                                    _state.update { it.copy(nextUp = nextItem.item) }
                                 }
 
                                 else -> {
@@ -1305,22 +1305,19 @@ class PlaybackViewModel
             segmentJob =
                 viewModelScope.launchIO {
                     val prefs = preferences.appPreferences.playbackPreferences
-                    // Debrid .strm has no Jellyfin media segments — source intro/credits from
-                    // jf-resolve (chromaprint). Falls back to Jellyfin segments for local content.
+                    // Debrid .strm has no Jellyfin media segments — source intro/credits from jf-resolve
+                    // (chromaprint). Falls back to Jellyfin segments for local content.
                     val segmentItems: List<MediaSegmentDto> =
                         fetchJfResolveSegments(resolverPath, itemId) ?: run {
                             val segments by api.mediaSegmentsApi.getItemSegments(itemId)
                             segments.items
                         }
-                    Timber.i("segments loaded n=%d", segmentItems.size)
                     if (segmentItems.isNotEmpty()) {
                         while (isActive) {
                             delay(500L)
-                            // Don't evaluate segments until the player is actually playing — otherwise
-                            // the Skip Intro button shows over the loading page (position 0 sits inside
-                            // the intro) and clicking it seeks a not-yet-ready player.
-                            val ready = onMain { player.playbackState == Player.STATE_READY }
-                            if (!ready) {
+                            // Don't evaluate segments until the player is actually playing — otherwise a
+                            // Skip button shows over the loading page (position 0 sits inside the intro).
+                            if (onMain { player.playbackState } != Player.STATE_READY) {
                                 if (state.value.currentSegment != null) {
                                     _state.update { it.copy(currentSegment = null) }
                                 }
@@ -1350,43 +1347,49 @@ class PlaybackViewModel
                                 }
                                 val state = state.value
 
-                                val behavior =
-                                    when (currentSegment.type) {
-                                        MediaSegmentType.COMMERCIAL -> prefs.skipCommercials
-                                        MediaSegmentType.PREVIEW -> prefs.skipPreviews
-                                        MediaSegmentType.RECAP -> prefs.skipRecaps
-                                        MediaSegmentType.OUTRO -> prefs.skipOutros
-                                        MediaSegmentType.INTRO -> prefs.skipIntros
-                                        MediaSegmentType.UNKNOWN -> SkipSegmentBehavior.IGNORE
+                                if (currentSegment.type == MediaSegmentType.OUTRO &&
+                                    prefs.showNextUpWhen == ShowNextUpWhen.DURING_CREDITS &&
+                                    state.hasNext &&
+                                    outroShownSegments.add(currentSegment.id)
+                                ) {
+                                    val nextItem = state.nextItem()
+                                    if (nextItem is PlaylistItem.Media) {
+                                        Timber.v("Setting next up during outro to ${nextItem?.id}")
+                                        _state.update { it.copy(nextUp = nextItem.item) }
                                     }
-                                withContext(WholphinDispatchers.Main) {
-                                    val newSegment =
-                                        when (behavior) {
-                                            SkipSegmentBehavior.AUTO_SKIP -> {
-                                                if (autoSkippedSegments.add(currentSegment.id)) {
-                                                    // Credits (last segment): skipping = go to the next
-                                                    // episode. Other segments: seek past the segment.
-                                                    if (currentSegment.type == MediaSegmentType.OUTRO && state.hasNext) {
-                                                        playNextUp()
-                                                    } else {
+                                } else {
+                                    val behavior =
+                                        when (currentSegment.type) {
+                                            MediaSegmentType.COMMERCIAL -> prefs.skipCommercials
+                                            MediaSegmentType.PREVIEW -> prefs.skipPreviews
+                                            MediaSegmentType.RECAP -> prefs.skipRecaps
+                                            MediaSegmentType.OUTRO -> prefs.skipOutros
+                                            MediaSegmentType.INTRO -> prefs.skipIntros
+                                            MediaSegmentType.UNKNOWN -> SkipSegmentBehavior.IGNORE
+                                        }
+                                    withContext(WholphinDispatchers.Main) {
+                                        val newSegment =
+                                            when (behavior) {
+                                                SkipSegmentBehavior.AUTO_SKIP -> {
+                                                    if (autoSkippedSegments.add(currentSegment.id)) {
                                                         onMain { player.seekTo(currentSegment.endTicks.ticks.inWholeMilliseconds + 1) }
                                                     }
+                                                    MediaSegmentState(currentSegment, true)
                                                 }
-                                                MediaSegmentState(currentSegment, true)
-                                            }
 
-                                            SkipSegmentBehavior.ASK_TO_SKIP -> {
-                                                MediaSegmentState(
-                                                    currentSegment,
-                                                    autoSkippedSegments.contains(currentSegment.id),
-                                                )
-                                            }
+                                                SkipSegmentBehavior.ASK_TO_SKIP -> {
+                                                    MediaSegmentState(
+                                                        currentSegment,
+                                                        autoSkippedSegments.contains(currentSegment.id),
+                                                    )
+                                                }
 
-                                            else -> {
-                                                null
+                                                else -> {
+                                                    null
+                                                }
                                             }
-                                        }
-                                    _state.update { it.copy(currentSegment = newSegment) }
+                                        _state.update { it.copy(currentSegment = newSegment) }
+                                    }
                                 }
                             } else if (currentSegment == null) {
                                 _state.update { it.copy(currentSegment = null) }
@@ -1408,12 +1411,7 @@ class PlaybackViewModel
                         _state.update { it.copy(currentSegment = it.currentSegment?.copy(interacted = true)) }
                     } else {
                         _state.update { it.copy(currentSegment = null) }
-                        // Skipping credits jumps to the next episode; other segments seek past.
-                        if (segment.type == MediaSegmentType.OUTRO && state.value.hasNext) {
-                            playNextUp()
-                        } else {
-                            onMain { player.seekTo(segment.endTicks.ticks.inWholeMilliseconds + 1) }
-                        }
+                        onMain { player.seekTo(segment.endTicks.ticks.inWholeMilliseconds + 1) }
                     }
                 }
             }

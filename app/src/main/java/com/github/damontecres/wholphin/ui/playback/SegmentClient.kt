@@ -52,7 +52,11 @@ suspend fun fetchJfResolveSegments(resolverPath: String?, itemId: UUID): List<Me
                         segs += seg(itemId, MediaSegmentType.INTRO, it.getDouble("start"), it.getDouble("end"))
                     }
                     json.optJSONObject("credits")?.let {
-                        segs += seg(itemId, MediaSegmentType.OUTRO, it.getDouble("start"), it.getDouble("end"))
+                        // Force the outro's end to the real episode end so Wholphin's existing
+                        // skip-outro / next-up logic treats the credits as running to the end.
+                        val durationSec = json.optDouble("duration", 0.0)
+                        val endSec = if (durationSec > 0.0) durationSec else it.getDouble("end")
+                        segs += seg(itemId, MediaSegmentType.OUTRO, it.getDouble("start"), endSec)
                     }
                     Timber.i("jf-resolve segments ready for %s: %d", itemId, segs.size)
                     return segs
