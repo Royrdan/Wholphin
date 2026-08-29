@@ -649,19 +649,8 @@ class PlaybackViewModel
                                 prewarmNext(next.item.id)
                             }
                         }
-
-                        // Next Up card for DURING_CREDITS on debrid (no outro segments): show in the tail.
-                        val prefs = preferences.appPreferences.playbackPreferences
-                        if (prefs.showNextUpWhen == ShowNextUpWhen.DURING_CREDITS &&
-                            state.value.hasNext &&
-                            state.value.nextUp == null &&
-                            remainingMs <= NEXTUP_TAIL_MS
-                        ) {
-                            (state.value.nextItem() as? PlaylistItem.Media)?.let { next ->
-                                Timber.v("Position watcher showing Next Up (tail) for %s", next.id)
-                                _state.update { it.copy(nextUp = next.item) }
-                            }
-                        }
+                        // NOTE: the Next Up card is driven by the credits (OUTRO) segment + STATE_ENDED,
+                        // NOT a fixed time tail — a fixed tail auto-advanced no-segment episodes early.
                     }
                 }
         }
@@ -1276,7 +1265,8 @@ class PlaybackViewModel
 
                                 prefs.showNextUpWhen != ShowNextUpWhen.NEXT_UP_NEVER -> {
                                     Timber.v("Setting next up to ${nextItem.id}")
-                                    _state.update { it.copy(nextUp = nextItem.item) }
+                                    // At the real end — allow auto-advance (countdown) now.
+                                    _state.update { it.copy(nextUp = nextItem.item, nextUpAutoAdvance = true) }
                                 }
 
                                 else -> {
@@ -1326,6 +1316,7 @@ class PlaybackViewModel
                             val segments by api.mediaSegmentsApi.getItemSegments(itemId)
                             segments.items
                         }
+                    Timber.i("segments loaded n=%d", segmentItems.size)
                     if (segmentItems.isNotEmpty()) {
                         while (isActive) {
                             delay(500L)
@@ -1374,7 +1365,11 @@ class PlaybackViewModel
                                         val nextItem = state.nextItem()
                                         if (nextItem is PlaylistItem.Media) {
                                             Timber.v("Setting next up during credits to ${nextItem?.id}")
-                                            _state.update { it.copy(nextUp = nextItem.item) }
+                                            // Display only — do NOT auto-advance mid-credits (that cut the
+                                            // episode short). Auto-advance kicks in at STATE_ENDED.
+                                            _state.update {
+                                                it.copy(nextUp = nextItem.item, nextUpAutoAdvance = false)
+                                            }
                                         }
                                     }
                                 } else {
