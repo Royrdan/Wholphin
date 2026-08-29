@@ -1325,6 +1325,16 @@ class PlaybackViewModel
                     if (segmentItems.isNotEmpty()) {
                         while (isActive) {
                             delay(500L)
+                            // Don't evaluate segments until the player is actually playing — otherwise
+                            // the Skip Intro button shows over the loading page (position 0 sits inside
+                            // the intro) and clicking it seeks a not-yet-ready player.
+                            val ready = onMain { player.playbackState == Player.STATE_READY }
+                            if (!ready) {
+                                if (state.value.currentSegment != null) {
+                                    _state.update { it.copy(currentSegment = null) }
+                                }
+                                continue
+                            }
                             val currentTicks =
                                 onMain { player.currentPosition.milliseconds.inWholeTicks }
                             val currentSegment =
@@ -1349,15 +1359,19 @@ class PlaybackViewModel
                                 }
                                 val state = state.value
 
-                                if (currentSegment.type == MediaSegmentType.OUTRO &&
-                                    prefs.showNextUpWhen == ShowNextUpWhen.DURING_CREDITS &&
-                                    state.hasNext &&
-                                    outroShownSegments.add(currentSegment.id)
-                                ) {
-                                    val nextItem = state.nextItem()
-                                    if (nextItem is PlaylistItem.Media) {
-                                        Timber.v("Setting next up during outro to ${nextItem?.id}")
-                                        _state.update { it.copy(nextUp = nextItem.item) }
+                                if (currentSegment.type == MediaSegmentType.OUTRO) {
+                                    // Credits: show the Next Up card (unless disabled) and let playback
+                                    // run out — NEVER seek-skip credits, which cuts the last seconds of
+                                    // the episode. Auto-advance still fires at the natural end.
+                                    if (prefs.showNextUpWhen != ShowNextUpWhen.NEXT_UP_NEVER &&
+                                        state.hasNext &&
+                                        outroShownSegments.add(currentSegment.id)
+                                    ) {
+                                        val nextItem = state.nextItem()
+                                        if (nextItem is PlaylistItem.Media) {
+                                            Timber.v("Setting next up during credits to ${nextItem?.id}")
+                                            _state.update { it.copy(nextUp = nextItem.item) }
+                                        }
                                     }
                                 } else {
                                     val behavior =
