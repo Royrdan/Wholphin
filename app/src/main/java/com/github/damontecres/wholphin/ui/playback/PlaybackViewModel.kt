@@ -1350,57 +1350,43 @@ class PlaybackViewModel
                                 }
                                 val state = state.value
 
-                                if (currentSegment.type == MediaSegmentType.OUTRO) {
-                                    // Credits: show the Next Up card (unless disabled) and let playback
-                                    // run out — NEVER seek-skip credits, which cuts the last seconds of
-                                    // the episode. Auto-advance still fires at the natural end.
-                                    if (prefs.showNextUpWhen != ShowNextUpWhen.NEXT_UP_NEVER &&
-                                        state.hasNext &&
-                                        outroShownSegments.add(currentSegment.id)
-                                    ) {
-                                        val nextItem = state.nextItem()
-                                        if (nextItem is PlaylistItem.Media) {
-                                            Timber.v("Setting next up during credits to ${nextItem?.id}")
-                                            // Display only — do NOT auto-advance mid-credits (that cut the
-                                            // episode short). Auto-advance kicks in at STATE_ENDED.
-                                            _state.update {
-                                                it.copy(nextUp = nextItem.item, nextUpAutoAdvance = false)
-                                            }
-                                        }
+                                val behavior =
+                                    when (currentSegment.type) {
+                                        MediaSegmentType.COMMERCIAL -> prefs.skipCommercials
+                                        MediaSegmentType.PREVIEW -> prefs.skipPreviews
+                                        MediaSegmentType.RECAP -> prefs.skipRecaps
+                                        MediaSegmentType.OUTRO -> prefs.skipOutros
+                                        MediaSegmentType.INTRO -> prefs.skipIntros
+                                        MediaSegmentType.UNKNOWN -> SkipSegmentBehavior.IGNORE
                                     }
-                                } else {
-                                    val behavior =
-                                        when (currentSegment.type) {
-                                            MediaSegmentType.COMMERCIAL -> prefs.skipCommercials
-                                            MediaSegmentType.PREVIEW -> prefs.skipPreviews
-                                            MediaSegmentType.RECAP -> prefs.skipRecaps
-                                            MediaSegmentType.OUTRO -> prefs.skipOutros
-                                            MediaSegmentType.INTRO -> prefs.skipIntros
-                                            MediaSegmentType.UNKNOWN -> SkipSegmentBehavior.IGNORE
-                                        }
-                                    withContext(WholphinDispatchers.Main) {
-                                        val newSegment =
-                                            when (behavior) {
-                                                SkipSegmentBehavior.AUTO_SKIP -> {
-                                                    if (autoSkippedSegments.add(currentSegment.id)) {
+                                withContext(WholphinDispatchers.Main) {
+                                    val newSegment =
+                                        when (behavior) {
+                                            SkipSegmentBehavior.AUTO_SKIP -> {
+                                                if (autoSkippedSegments.add(currentSegment.id)) {
+                                                    // Credits (last segment): skipping = go to the next
+                                                    // episode. Other segments: seek past the segment.
+                                                    if (currentSegment.type == MediaSegmentType.OUTRO && state.hasNext) {
+                                                        playNextUp()
+                                                    } else {
                                                         onMain { player.seekTo(currentSegment.endTicks.ticks.inWholeMilliseconds + 1) }
                                                     }
-                                                    MediaSegmentState(currentSegment, true)
                                                 }
-
-                                                SkipSegmentBehavior.ASK_TO_SKIP -> {
-                                                    MediaSegmentState(
-                                                        currentSegment,
-                                                        autoSkippedSegments.contains(currentSegment.id),
-                                                    )
-                                                }
-
-                                                else -> {
-                                                    null
-                                                }
+                                                MediaSegmentState(currentSegment, true)
                                             }
-                                        _state.update { it.copy(currentSegment = newSegment) }
-                                    }
+
+                                            SkipSegmentBehavior.ASK_TO_SKIP -> {
+                                                MediaSegmentState(
+                                                    currentSegment,
+                                                    autoSkippedSegments.contains(currentSegment.id),
+                                                )
+                                            }
+
+                                            else -> {
+                                                null
+                                            }
+                                        }
+                                    _state.update { it.copy(currentSegment = newSegment) }
                                 }
                             } else if (currentSegment == null) {
                                 _state.update { it.copy(currentSegment = null) }
@@ -1422,7 +1408,12 @@ class PlaybackViewModel
                         _state.update { it.copy(currentSegment = it.currentSegment?.copy(interacted = true)) }
                     } else {
                         _state.update { it.copy(currentSegment = null) }
-                        onMain { player.seekTo(segment.endTicks.ticks.inWholeMilliseconds + 1) }
+                        // Skipping credits jumps to the next episode; other segments seek past.
+                        if (segment.type == MediaSegmentType.OUTRO && state.value.hasNext) {
+                            playNextUp()
+                        } else {
+                            onMain { player.seekTo(segment.endTicks.ticks.inWholeMilliseconds + 1) }
+                        }
                     }
                 }
             }
