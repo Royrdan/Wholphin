@@ -24,6 +24,9 @@ data class PlaybackState(
     val analyticsState: AnalyticsState = AnalyticsState(),
     val subtitleCues: List<Cue> = emptyList(),
     val nextUp: BaseItem? = null,
+    // True only when nextUp was set at the real end of playback — the auto-advance countdown runs
+    // only then. Set false when the card is shown mid-credits (display only, no early auto-advance).
+    val nextUpAutoAdvance: Boolean = false,
     val playlistIndex: Int = 0,
     val playlist: Playlist = Playlist(emptyList()),
 ) {

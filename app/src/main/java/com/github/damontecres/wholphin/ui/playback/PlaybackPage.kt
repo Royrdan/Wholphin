@@ -635,8 +635,13 @@ fun PlaybackPageContent(
                     .align(Alignment.BottomCenter),
         ) {
             state.nextUp?.let {
-                var autoPlayEnabled by remember { mutableStateOf(viewModel.shouldAutoPlayNextUp()) }
-                var timeLeft by remember {
+                // Only auto-advance when the card was raised at the real end (nextUpAutoAdvance) — a
+                // card shown mid-credits is display-only, so the episode isn't cut short. Re-keyed on
+                // the flag so the countdown starts once STATE_ENDED flips it true.
+                var autoPlayEnabled by remember(state.nextUpAutoAdvance) {
+                    mutableStateOf(viewModel.shouldAutoPlayNextUp() && state.nextUpAutoAdvance)
+                }
+                var timeLeft by remember(state.nextUpAutoAdvance) {
                     mutableLongStateOf(
                         preferences.appPreferences.playbackPreferences.autoPlayNextDelaySeconds,
                     )
