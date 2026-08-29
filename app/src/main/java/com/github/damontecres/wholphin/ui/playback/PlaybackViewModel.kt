@@ -686,8 +686,49 @@ class PlaybackViewModel
                     val mediaUrl =
                         if (source.supportsDirectPlay) {
                             if (source.isRemote && source.path.isNotNullOrBlank()) {
-                                Timber.i("Playback is remote for source: %s", source.id)
-                                source.path
+                                val remotePath = source.path!!
+                                if (remotePath.isJfResolvePath()) {
+                                    // Debrid .strm: resolve to the direct CDN link in-app (same as the
+                                    // external-player path) so ExoPlayer receives a range-capable direct
+                                    // URL instead of a resolver URL it cannot follow (cross-protocol 302)
+                                    // or a Jellyfin proxy URL that makes the server loop on the redirect.
+                                    // Show the "finding source" loading screen while we resolve: a cold
+                                    // (uncached) title takes a few seconds, and on auto-play-next the
+                                    // previous item is already in Success state, so without this the
+                                    // resolve would happen with nothing on screen.
+                                    _state.update { it.copy(loading = LoadingState.Loading) }
+                                    when (val r = resolveDebridDirectUrl(remotePath)) {
+                                        is StrmResolveResult.Success -> {
+                                            Timber.i(
+                                                "jf-resolve direct url for %s -> %s",
+                                                source.id,
+                                                r.url.take(90),
+                                            )
+                                            r.url
+                                        }
+
+                                        is StrmResolveResult.Error -> {
+                                            Timber.e(
+                                                "jf-resolve failed for %s: code=%d %s",
+                                                source.id,
+                                                r.code,
+                                                r.reason,
+                                            )
+                                            _state.update {
+                                                it.copy(
+                                                    loading =
+                                                        LoadingState.Error(
+                                                            "Couldn't find a playable source (${r.reason})",
+                                                        ),
+                                                )
+                                            }
+                                            return@withContext
+                                        }
+                                    }
+                                } else {
+                                    Timber.i("Playback is remote for source: %s", source.id)
+                                    remotePath
+                                }
                             } else {
                                 api.videosApi.getVideoStreamUrl(
                                     itemId = itemId,
