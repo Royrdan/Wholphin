@@ -1420,6 +1420,7 @@ class PlaybackViewModel
                                                 SkipSegmentBehavior.AUTO_SKIP -> {
                                                     if (autoSkippedSegments.add(currentSegment.id)) {
                                                         onMain { player.seekTo(currentSegment.endTicks.ticks.inWholeMilliseconds + 1) }
+                                                        scheduleAudioResync()
                                                     }
                                                     MediaSegmentState(currentSegment, true)
                                                 }
@@ -1459,9 +1460,32 @@ class PlaybackViewModel
                     } else {
                         _state.update { it.copy(currentSegment = null) }
                         onMain { player.seekTo(segment.endTicks.ticks.inWholeMilliseconds + 1) }
+                        scheduleAudioResync()
                     }
                 }
             }
+        }
+
+        private var audioResyncJob: Job? = null
+
+        /**
+         * Some debrid streams lose A/V sync on the FIRST seek after playback starts (e.g. an intro
+         * auto-skip). A second seek re-flushes the audio pipeline and restores sync — which is why a
+         * manual seek "fixes" it. Do that automatically: shortly after a skip, nudge-seek back a hair
+         * (imperceptible) to force the resync.
+         */
+        private fun scheduleAudioResync() {
+            audioResyncJob?.cancel()
+            audioResyncJob =
+                viewModelScope.launchDefault {
+                    delay(700)
+                    onMain {
+                        val pos = player.currentPosition
+                        if (pos > 400) {
+                            player.seekTo(pos - 300)
+                        }
+                    }
+                }
         }
 
         private fun listenForTranscodeReason(): Job =
