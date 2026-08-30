@@ -34,6 +34,12 @@ class StreamChoiceService
     ) {
         private val userConfig: UserConfiguration? get() = serverRepository.currentUserDto?.configuration
 
+        // The internal ExoPlayer engine can't decode these lossless/HD audio codecs on this
+        // hardware (no native decoder, no passthrough) -> picking one yields silence, or a failed
+        // transcode on remote/.strm sources. Rank a decodable track (AC3/EAC3/AAC/FLAC/...) above
+        // these when a choice exists.
+        private val undecodableAudioCodecs = setOf("dts", "dca", "truehd", "mlp")
+
         suspend fun updateAudio(
             dto: BaseItemDto,
             audioLang: String,
@@ -139,16 +145,23 @@ class StreamChoiceService
                 // If the user has chosen a different language for the series, prefer that
                 val audioLanguage =
                     seriesLang ?: getPreferredLanguage(MediaStreamType.AUDIO, prefs, userConfig)
+                // Rank: preferred language first, then a player-decodable codec (avoid DTS/TrueHD),
+                // then the default-disposition track, then most channels.
                 if (audioLanguage.isNotNullOrBlank()) {
-                    val sorted =
-                        candidates.sortedWith(compareBy<MediaStream> { it.language }.thenByDescending { it.channels })
-                    sorted.firstOrNull { it.language == audioLanguage && it.isDefault }
-                        ?: sorted.firstOrNull { it.language == audioLanguage }
-                        ?: sorted.firstOrNull { it.isDefault }
-                        ?: sorted.firstOrNull()
+                    candidates
+                        .sortedWith(
+                            compareByDescending<MediaStream> { it.language == audioLanguage }
+                                .thenBy { it.codec?.lowercase() in undecodableAudioCodecs }
+                                .thenByDescending { it.isDefault }
+                                .thenByDescending { it.channels },
+                        ).firstOrNull()
                 } else {
-                    candidates.firstOrNull { it.isDefault }
-                        ?: candidates.firstOrNull()
+                    candidates
+                        .sortedWith(
+                            compareBy<MediaStream> { it.codec?.lowercase() in undecodableAudioCodecs }
+                                .thenByDescending { it.isDefault }
+                                .thenByDescending { it.channels },
+                        ).firstOrNull()
                 }
             }
 

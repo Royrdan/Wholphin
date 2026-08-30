@@ -15,6 +15,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
@@ -527,6 +528,18 @@ class PlaybackViewModel
 
                 val subtitleStreams = mediaSource?.let { getSubtitleStreams(mediaSource) }.orEmpty()
                 val audioStreams = mediaSource?.let { getAudioStreams(mediaSource) }.orEmpty()
+                android.util.Log.i(
+                    "WholphinSUB",
+                    "menu-source id=${mediaSource?.id} protocol=${mediaSource?.protocol} totalStreams=${mediaSource?.mediaStreams?.size} subMenu=${subtitleStreams.size}",
+                )
+                mediaSource?.mediaStreams
+                    ?.filter { it.type == MediaStreamType.SUBTITLE }
+                    ?.forEach {
+                        android.util.Log.i(
+                            "WholphinSUB",
+                            "  src-sub idx=${it.index} lang=${it.language} codec=${it.codec} delivery=${it.deliveryMethod} external=${it.isExternal}",
+                        )
+                    }
                 val audioStream =
                     mediaSource?.let {
                         streamChoiceService
@@ -1157,6 +1170,40 @@ class PlaybackViewModel
                         )
                     }
 
+                    // Synthesised-menu mode: the server media source carried no subtitle
+                    // streams, so the menu entries were built from the player's own detected
+                    // text tracks. Select the embedded track directly by ordinal instead of
+                    // mapping through a (non-existent) server stream index.
+                    val serverHasSubs =
+                        currentPlayback.mediaSourceInfo.mediaStreams
+                            ?.any { it.type == MediaStreamType.SUBTITLE } == true
+                    if (!serverHasSubs) {
+                        val newTracks =
+                            withContext(WholphinDispatchers.Main) {
+                                val textGroups =
+                                    player.currentTracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
+                                val builder =
+                                    player.trackSelectionParameters
+                                        .buildUpon()
+                                        .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                                val group = textGroups.getOrNull(index)
+                                if (index >= 0 && group != null) {
+                                    builder
+                                        .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                                        .addOverride(TrackSelectionOverride(group.mediaTrackGroup, 0))
+                                } else {
+                                    builder.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                                }
+                                player.trackSelectionParameters = builder.build()
+                                player.currentTracks
+                            }
+                        val supported = checkForSupport(newTracks)
+                        _state.update {
+                            it.copy(currentPlayback = it.currentPlayback?.copy(tracks = supported))
+                        }
+                        return@launchIO
+                    }
+
                     // Resolve ONLY_FORCED to actual track index for playback
                     val resolvedIndex =
                         streamChoiceService.resolveSubtitleIndex(
@@ -1548,6 +1595,35 @@ class PlaybackViewModel
         }
 
         override fun onTracksChanged(tracks: Tracks) {
+            // Fallback subtitle menu: some remote .strm sources return a PlaybackInfo
+            // media source with an empty stream list, so getSubtitleStreams() yields an
+            // empty menu even though the player has demuxed the embedded subtitle tracks.
+            // When the server gave us no subtitle streams, synthesise menu entries from
+            // the player's own detected text tracks so they become selectable.
+            val textGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
+            val src = state.value.currentPlayback?.mediaSourceInfo
+            val serverHasSubs = src?.mediaStreams?.any { it.type == MediaStreamType.SUBTITLE } == true
+            if (!serverHasSubs && textGroups.isNotEmpty() &&
+                state.value.currentMediaInfo.subtitleStreams.isEmpty()
+            ) {
+                val synth =
+                    textGroups.mapIndexed { i, g ->
+                        val f = g.getTrackFormat(0)
+                        val langName =
+                            f.language
+                                ?.let {
+                                    runCatching { java.util.Locale(it).displayLanguage }
+                                        .getOrNull()
+                                        ?.takeIf { n -> n.isNotBlank() } ?: it
+                                } ?: "Track ${i + 1}"
+                        val title = f.label?.let { "$langName ($it)" } ?: langName
+                        SimpleMediaStream(index = i, streamTitle = f.label, displayTitle = title)
+                    }
+                _state.update {
+                    it.copy(currentMediaInfo = it.currentMediaInfo.copy(subtitleStreams = synth))
+                }
+                android.util.Log.i("WholphinSUB", "synthesised ${synth.size} subtitle menu entries from player text tracks")
+            }
             updateCurrentPlayback {
                 it?.copy(
                     tracks = checkForSupport(tracks),
