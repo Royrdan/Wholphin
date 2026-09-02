@@ -1170,14 +1170,11 @@ class PlaybackViewModel
                         )
                     }
 
-                    // Synthesised-menu mode: the server media source carried no subtitle
-                    // streams, so the menu entries were built from the player's own detected
-                    // text tracks. Select the embedded track directly by ordinal instead of
-                    // mapping through a (non-existent) server stream index.
-                    val serverHasSubs =
-                        currentPlayback.mediaSourceInfo.mediaStreams
-                            ?.any { it.type == MediaStreamType.SUBTITLE } == true
-                    if (!serverHasSubs) {
+                    // Synthesised-menu mode: the menu entries were built from the player's own
+                    // detected text tracks (server PlaybackInfo had no usable subtitle streams).
+                    // Select the embedded track directly by ordinal instead of mapping through a
+                    // (non-existent / stale) server stream index.
+                    if (state.value.currentMediaInfo.synthesisedSubtitles) {
                         val newTracks =
                             withContext(WholphinDispatchers.Main) {
                                 val textGroups =
@@ -1624,10 +1621,14 @@ class PlaybackViewModel
             // empty menu even though the player has demuxed the embedded subtitle tracks.
             // When the server gave us no subtitle streams, synthesise menu entries from
             // the player's own detected text tracks so they become selectable.
+            // Trust the player's demuxed text tracks whenever the built subtitle menu is
+            // empty — this covers both a truly empty server stream list AND the case where
+            // Jellyfin re-probes the .strm mid-play and repopulates mediaStreams (so a
+            // serverHasSubs check flips true) while the menu we actually built stayed empty.
+            // The debrid direct-play path feeds ExoPlayer the resolved URL, so the engine —
+            // exactly like Just Player did — is the real source of the embedded subs.
             val textGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
-            val src = state.value.currentPlayback?.mediaSourceInfo
-            val serverHasSubs = src?.mediaStreams?.any { it.type == MediaStreamType.SUBTITLE } == true
-            if (!serverHasSubs && textGroups.isNotEmpty() &&
+            if (textGroups.isNotEmpty() &&
                 state.value.currentMediaInfo.subtitleStreams.isEmpty()
             ) {
                 val synth =
@@ -1644,9 +1645,47 @@ class PlaybackViewModel
                         SimpleMediaStream(index = i, streamTitle = f.label, displayTitle = title)
                     }
                 _state.update {
-                    it.copy(currentMediaInfo = it.currentMediaInfo.copy(subtitleStreams = synth))
+                    it.copy(
+                        currentMediaInfo =
+                            it.currentMediaInfo.copy(
+                                subtitleStreams = synth,
+                                synthesisedSubtitles = true,
+                            ),
+                    )
                 }
                 android.util.Log.i("WholphinSUB", "synthesised ${synth.size} subtitle menu entries from player text tracks")
+
+                // The normal server-side subtitle selection couldn't run (source had no streams),
+                // so nothing got enabled. When the user's mode is ALWAYS, auto-enable the preferred
+                // (English) synthesised track — otherwise the menu is populated but subs stay OFF on
+                // first play of an unprobed .strm. One-shot: guarded by subtitleStreams being empty
+                // above and subtitleIndex being null here.
+                val trackLangs = textGroups.map { it.getTrackFormat(0).language }
+                val autoOrdinal =
+                    streamChoiceService.chooseSynthSubtitleOrdinal(
+                        trackLanguages = trackLangs,
+                        itemPlayback = state.value.currentItemPlayback,
+                        playbackLanguageChoice = null,
+                        prefs = preferences,
+                    )
+                if (autoOrdinal != null && state.value.currentPlayback?.subtitleIndex == null) {
+                    textGroups.getOrNull(autoOrdinal)?.let { group ->
+                        val builder =
+                            player.trackSelectionParameters
+                                .buildUpon()
+                                .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                                .addOverride(TrackSelectionOverride(group.mediaTrackGroup, 0))
+                        player.trackSelectionParameters = builder.build()
+                        _state.update {
+                            it.copy(currentPlayback = it.currentPlayback?.copy(subtitleIndex = autoOrdinal))
+                        }
+                        android.util.Log.i(
+                            "WholphinSUB",
+                            "auto-enabled synth subtitle ordinal=$autoOrdinal lang=${trackLangs.getOrNull(autoOrdinal)}",
+                        )
+                    }
+                }
             }
             updateCurrentPlayback {
                 it?.copy(

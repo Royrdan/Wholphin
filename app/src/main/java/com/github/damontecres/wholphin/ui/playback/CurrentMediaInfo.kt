@@ -23,6 +23,11 @@ data class CurrentMediaInfo(
     val subtitleStreams: List<SimpleMediaStream>,
     val chapters: List<Chapter>,
     val trickPlayInfo: TrickplayInfo?,
+    // True when [subtitleStreams] was synthesised from the player's own demuxed text
+    // tracks (debrid/.strm source whose server PlaybackInfo carried no usable subtitle
+    // streams). In this mode subtitle selection is by player text-group ordinal, not by
+    // server stream index.
+    val synthesisedSubtitles: Boolean = false,
 ) {
     companion object {
         val EMPTY = CurrentMediaInfo(null, null, listOf(), listOf(), listOf(), null)
