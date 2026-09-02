@@ -350,6 +350,69 @@ class StreamChoiceService
             }
         }
 
+        /**
+         * Fallback for remote .strm sources whose PlaybackInfo returns an empty stream list: the
+         * subtitle menu is synthesised from the player's own demuxed text tracks (which carry no
+         * forced/default/SDH metadata, only a language). Decide whether to auto-enable a track and
+         * which ordinal, honouring the user's subtitle mode + preferred language.
+         *
+         * Conservative on purpose: only auto-shows for ALWAYS (incl. a series-level "always show
+         * this language" override, or USE_USER_PROFILE resolving to ALWAYS). For DEFAULT/SMART/
+         * ONLY_FORCED/NONE we can't identify the right track without metadata, so we leave subs off
+         * and let the (now-populated) menu be selected manually.
+         *
+         * @param trackLanguages languages of the player text groups, in menu order (nulls allowed).
+         * @return ordinal to enable, or null to leave subtitles off.
+         */
+        fun chooseSynthSubtitleOrdinal(
+            trackLanguages: List<String?>,
+            itemPlayback: ItemPlayback?,
+            playbackLanguageChoice: PlaybackLanguageChoice?,
+            prefs: UserPreferences,
+        ): Int? {
+            if (trackLanguages.isEmpty()) return null
+            if (itemPlayback?.subtitleIndex == TrackIndex.DISABLED) return null
+            val seriesLang =
+                playbackLanguageChoice?.subtitleLanguage?.takeIf { it.isNotNullOrBlank() }
+            val subtitleLanguage =
+                seriesLang ?: getPreferredLanguage(MediaStreamType.SUBTITLE, prefs, userConfig)
+            val mode =
+                when {
+                    playbackLanguageChoice?.subtitlesDisabled == false && seriesLang != null ->
+                        SubtitlePlaybackMode.ALWAYS
+
+                    playbackLanguageChoice?.subtitlesDisabled == true && seriesLang == null ->
+                        SubtitlePlaybackMode.NONE
+
+                    else ->
+                        when (prefs.userPreferences?.subtitleMode) {
+                            SubtitleModePreference.USE_USER_PROFILE -> userConfig?.subtitleMode
+                            SubtitleModePreference.ALWAYS -> SubtitlePlaybackMode.ALWAYS
+                            SubtitleModePreference.NONE -> SubtitlePlaybackMode.NONE
+                            SubtitleModePreference.DEFAULT -> SubtitlePlaybackMode.DEFAULT
+                            SubtitleModePreference.SMART -> SubtitlePlaybackMode.SMART
+                            SubtitleModePreference.ONLY_FORCED -> SubtitlePlaybackMode.ONLY_FORCED
+                            null -> SubtitlePlaybackMode.DEFAULT
+                        }
+                } ?: SubtitlePlaybackMode.DEFAULT
+            if (mode != SubtitlePlaybackMode.ALWAYS) return null
+
+            fun norm(l: String?): String? =
+                l?.takeIf { it.isNotBlank() }?.let {
+                    runCatching { java.util.Locale(it).isO3Language }
+                        .getOrNull()
+                        ?.takeIf { s -> s.isNotBlank() } ?: it.lowercase()
+                }
+            val want = norm(subtitleLanguage)
+            val byPref = if (want != null) trackLanguages.indexOfFirst { norm(it) == want } else -1
+            val byEng = trackLanguages.indexOfFirst { norm(it) == "eng" }
+            return when {
+                byPref >= 0 -> byPref
+                byEng >= 0 -> byEng
+                else -> 0
+            }
+        }
+
         /** Returns true if the track is forced (via metadata flag or title patterns). */
         private fun isForcedOrSigns(track: MediaStream): Boolean {
             if (track.isForced) return true
