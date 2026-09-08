@@ -46,9 +46,11 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.withTimeout
 import org.jellyfin.sdk.api.client.ApiClient
 import org.jellyfin.sdk.api.client.extensions.playStateApi
 import org.jellyfin.sdk.api.client.extensions.subtitleApi
@@ -184,7 +186,7 @@ class PlayExternalViewModel
                             }
                         }
 
-                    val queriedItem = api.userLibraryApi.getItem(itemId).content
+                    val queriedItem = prepStep("get item") { api.userLibraryApi.getItem(itemId).content }
                     val shuffle =
                         when (destination) {
                             is Destination.Playback -> destination.shuffle
@@ -198,17 +200,19 @@ class PlayExternalViewModel
                     val playlistItems: List<PlaylistItem> =
                         if (queriedItem.type == BaseItemKind.EPISODE || !queriedItem.type.playable) {
                             val playlistResult =
-                                if (destination is Destination.PlaybackList) {
-                                    playlistCreator.createFrom(
-                                        item = queriedItem,
-                                        startIndex = destination.startIndex ?: 0,
-                                        sortAndDirection = destination.sortAndDirection,
-                                        shuffled = shuffle,
-                                        recursive = destination.recursive,
-                                        filter = destination.filter,
-                                    )
-                                } else {
-                                    playlistCreator.createFrom(item = queriedItem, shuffled = shuffle)
+                                prepStep("build queue") {
+                                    if (destination is Destination.PlaybackList) {
+                                        playlistCreator.createFrom(
+                                            item = queriedItem,
+                                            startIndex = destination.startIndex ?: 0,
+                                            sortAndDirection = destination.sortAndDirection,
+                                            shuffled = shuffle,
+                                            recursive = destination.recursive,
+                                            filter = destination.filter,
+                                        )
+                                    } else {
+                                        playlistCreator.createFrom(item = queriedItem, shuffled = shuffle)
+                                    }
                                 }
                             when (val r = playlistResult) {
                                 is PlaylistCreationResult.Error ->
@@ -250,6 +254,37 @@ class PlayExternalViewModel
         }
 
         /**
+         * Runs one pre-resolve Jellyfin call with a hard timeout and a single retry.
+         *
+         * Jellyfin can stall for minutes on these calls when it ffprobes a cold debrid CDN link
+         * for a .strm item ("Error in Probe Provider" server-side); without a cap the spinner
+         * never ends and only an app restart recovers. The aborted first attempt usually leaves
+         * the CDN link warmed, so the retry tends to be quick. A second timeout throws a plain
+         * RuntimeException (NOT the TimeoutCancellationException) because the auto-advance path
+         * swallows CancellationException — rethrowing it would wedge the spinner again.
+         */
+        private suspend fun <T> prepStep(
+            what: String,
+            block: suspend () -> T,
+        ): T =
+            try {
+                withTimeout(PREP_TIMEOUT_MS) { block() }
+            } catch (ex: TimeoutCancellationException) {
+                Log.w(TAG, "prep '$what' timed out after ${PREP_TIMEOUT_MS / 1000}s - retrying once")
+                state.update { it.copy(statusMessage = "Server slow preparing this item — retrying…") }
+                try {
+                    withTimeout(PREP_TIMEOUT_MS) { block() }
+                } catch (ex2: TimeoutCancellationException) {
+                    Log.w(TAG, "prep '$what' timed out twice - surfacing error")
+                    throw RuntimeException(
+                        "Jellyfin took too long preparing this item " +
+                            "(media probe of the source link stalled). " +
+                            "Go back and press play again — the retry is usually instant.",
+                    )
+                }
+            }
+
+        /**
          * Resolves and launches the queue item at [index]. If [overridePositionMs] is null the
          * item's own resume position is used (so auto-advanced items resume where left off).
          */
@@ -266,8 +301,11 @@ class PlayExternalViewModel
                 return
             }
             val itemId = queue[index]
+            // Visible only while the initial spinner is up: distinguishes the Jellyfin prep
+            // phase from the later "Finding source…" resolve phase.
+            state.update { it.copy(statusMessage = "Loading item info…") }
             val prefs = userPreferencesService.getCurrent()
-            val item = BaseItem(api.userLibraryApi.getItem(itemId).content)
+            val item = BaseItem(prepStep("get item") { api.userLibraryApi.getItem(itemId).content })
             // Prefer an explicit override, then our local resume store, then the server's resume.
             val positionMs = overridePositionMs ?: localResumeMs(itemId) ?: item.resumeMs
 
@@ -857,6 +895,11 @@ class PlayExternalViewModel
             // read a wide window (must exceed jf-resolve's stream_probe_timeout_seconds, default 10s).
             private const val RESOLVE_CONNECT_TIMEOUT_MS = 15_000
             private const val RESOLVE_READ_TIMEOUT_MS = 45_000
+
+            // Hard cap per pre-resolve Jellyfin call (getItem / queue build). Jellyfin can stall
+            // for minutes ffprobing a cold debrid CDN link for a .strm item (server-side
+            // "Error in Probe Provider"); see prepStep.
+            private const val PREP_TIMEOUT_MS = 20_000L
 
             // Pre-warm the next item this long after the current one starts. Also a guard: browsing
             // in/out of an episode faster than this never triggers a background resolve.
