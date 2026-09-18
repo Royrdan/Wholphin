@@ -128,7 +128,18 @@ object TrackSelectionUtils {
                 .filter { it.type == type }
                 .let {
                     if (type == MediaStreamType.SUBTITLE) {
-                        it.filter { it.deliveryMethod == SubtitleDeliveryMethod.EMBED || it.deliveryMethod == SubtitleDeliveryMethod.HLS }
+                        // A direct-play remote source (debrid .strm) comes back with
+                        // deliveryMethod == null for its embedded text tracks: the
+                        // server is not delivering them at all, the player demuxes
+                        // them itself. Treating null as "not embedded" made this
+                        // filter empty, so getPlayerIndex returned null, chosenTrack
+                        // was null, and the result was NOT_FOUND - the menu listed
+                        // every track but none could ever be switched on.
+                        it.filter {
+                            it.deliveryMethod == SubtitleDeliveryMethod.EMBED ||
+                                it.deliveryMethod == SubtitleDeliveryMethod.HLS ||
+                                it.deliveryMethod == null
+                        }
                     } else {
                         it
                     }
