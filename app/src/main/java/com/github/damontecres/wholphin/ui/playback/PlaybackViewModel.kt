@@ -97,6 +97,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import org.jellyfin.sdk.Jellyfin
 import org.jellyfin.sdk.api.client.ApiClient
 import org.jellyfin.sdk.api.client.extensions.mediaInfoApi
 import org.jellyfin.sdk.api.client.extensions.mediaSegmentsApi
@@ -115,6 +116,7 @@ import org.jellyfin.sdk.model.api.MediaStreamType
 import org.jellyfin.sdk.model.api.MediaType
 import org.jellyfin.sdk.model.api.PlayMethod
 import org.jellyfin.sdk.model.api.PlaybackInfoDto
+import org.jellyfin.sdk.model.api.PlaybackInfoResponse
 import org.jellyfin.sdk.model.api.PlaystateCommand
 import org.jellyfin.sdk.model.api.PlaystateMessage
 import org.jellyfin.sdk.model.api.TrickplayInfo
@@ -141,6 +143,7 @@ class PlaybackViewModel
     constructor(
         @param:ApplicationContext internal val context: Context,
         internal val api: ApiClient,
+        private val jellyfin: Jellyfin,
         val navigationManager: NavigationManager,
         private val playlistCreator: PlaylistCreator,
         private val itemPlaybackDao: ItemPlaybackDao,
@@ -801,6 +804,54 @@ class PlaybackViewModel
             }
 
         /**
+         * Ask Jellyfin for playback info, with a timeout big enough for a cold debrid resolve.
+         *
+         * A debrid `.strm` has no cached media info, so Jellyfin ffprobes it *inside* this call —
+         * and that probe blocks on jf-resolve's candidate walk. Encanto on 2026-09-20 took 53s
+         * (41s walk + 8s probe). The shared [api] client uses the SDK default request timeout of
+         * 30 seconds, so the socket died 23s before the answer arrived. Only THIS call gets the
+         * long budget; every other request keeps the short default so a dead server still fails
+         * fast.
+         *
+         * Retried once, because after a timeout Jellyfin has usually finished its probe and
+         * cached the media info — the second attempt then returns almost immediately.
+         */
+        private suspend fun requestPlaybackInfo(
+            itemId: UUID,
+            body: PlaybackInfoDto,
+        ): PlaybackInfoResponse {
+            val patientApi =
+                jellyfin.createApi(
+                    baseUrl = api.baseUrl,
+                    accessToken = api.accessToken,
+                    httpClientOptions =
+                        api.httpClientOptions.copy(
+                            requestTimeout = PLAYBACK_INFO_TIMEOUT,
+                            socketTimeout = PLAYBACK_INFO_TIMEOUT,
+                        ),
+                )
+            var lastError: Exception? = null
+            repeat(PLAYBACK_INFO_ATTEMPTS) { attempt ->
+                try {
+                    val response by patientApi.mediaInfoApi.getPostedPlaybackInfo(itemId, body)
+                    return response
+                } catch (ex: CancellationException) {
+                    throw ex
+                } catch (ex: Exception) {
+                    lastError = ex
+                    Timber.w(
+                        ex,
+                        "PostedPlaybackInfo attempt %d/%d failed for %s",
+                        attempt + 1,
+                        PLAYBACK_INFO_ATTEMPTS,
+                        itemId,
+                    )
+                }
+            }
+            throw lastError ?: IllegalStateException("PostedPlaybackInfo failed for $itemId")
+        }
+
+        /**
          * Change which streams (ie audio or subtitle) are active
          */
         @OptIn(UnstableApi::class)
@@ -855,35 +906,56 @@ class PlaybackViewModel
                 val maxBitrate =
                     preferences.appPreferences.playbackPreferences.maxBitrate
                         .takeIf { it > 0 } ?: AppPreference.DEFAULT_BITRATE
-                val response by
-                    api.mediaInfoApi
-                        .getPostedPlaybackInfo(
-                            itemId,
-                            PlaybackInfoDto(
-                                startTimeTicks = null,
-                                deviceProfile =
-                                    if (currentPlayer.value!!.backend == PlayerBackend.EXO_PLAYER) {
-                                        deviceProfileService.getOrCreateDeviceProfile(
-                                            preferences.appPreferences,
-                                            serverRepository.currentServer?.serverVersion,
-                                        )
-                                    } else {
-                                        mpvDeviceProfile
-                                    },
-                                maxAudioChannels = null,
-                                audioStreamIndex = audioIndex,
-                                subtitleStreamIndex = subtitleIndex,
-                                mediaSourceId = sourceId,
-                                alwaysBurnInSubtitleWhenTranscoding = false,
-                                maxStreamingBitrate = maxBitrate.toInt(),
-                                enableDirectPlay = enableDirectPlay,
-                                enableDirectStream = enableDirectStream,
-                                allowVideoStreamCopy = enableDirectStream,
-                                allowAudioStreamCopy = enableDirectStream,
-                                enableTranscoding = true,
-                                autoOpenLiveStream = true,
-                            ),
-                        )
+                val playbackInfoDto =
+                    PlaybackInfoDto(
+                        startTimeTicks = null,
+                        deviceProfile =
+                            if (currentPlayer.value!!.backend == PlayerBackend.EXO_PLAYER) {
+                                deviceProfileService.getOrCreateDeviceProfile(
+                                    preferences.appPreferences,
+                                    serverRepository.currentServer?.serverVersion,
+                                )
+                            } else {
+                                mpvDeviceProfile
+                            },
+                        maxAudioChannels = null,
+                        audioStreamIndex = audioIndex,
+                        subtitleStreamIndex = subtitleIndex,
+                        mediaSourceId = sourceId,
+                        alwaysBurnInSubtitleWhenTranscoding = false,
+                        maxStreamingBitrate = maxBitrate.toInt(),
+                        enableDirectPlay = enableDirectPlay,
+                        enableDirectStream = enableDirectStream,
+                        allowVideoStreamCopy = enableDirectStream,
+                        allowAudioStreamCopy = enableDirectStream,
+                        enableTranscoding = true,
+                        autoOpenLiveStream = true,
+                    )
+                val response =
+                    try {
+                        requestPlaybackInfo(itemId, playbackInfoDto)
+                    } catch (ex: CancellationException) {
+                        throw ex
+                    } catch (ex: Exception) {
+                        // Without this catch the exception escaped to the app-wide
+                        // CoroutineExceptionHandler, which only writes a log line: the loading
+                        // state was never cleared, so the page spun forever and the only way
+                        // out was Back + play again. Surface it instead.
+                        Timber.e(ex, "PostedPlaybackInfo failed for %s", itemId)
+                        loadStatusTicker?.cancel()
+                        val resolveFailure = lastResolveProgress?.takeIf { it.isFailed }?.message
+                        _state.update {
+                            it.copy(
+                                loading =
+                                    LoadingState.Error(
+                                        resolveFailure
+                                            ?: "Timed out waiting for the server to find a source",
+                                    ),
+                                statusMessage = null,
+                            )
+                        }
+                        return@withContext
+                    }
                 if (response.errorCode != null) {
                     Timber.e("Error in PostedPlaybackInfo: %s", response.errorCode)
                     loadStatusTicker?.cancel()
@@ -2132,6 +2204,12 @@ private const val PROGRESS_POLL_INTERVAL_MS = 700L
 private const val PROGRESS_PATH_LOOKUP_TIMEOUT_MS = 6_000L
 private const val PROGRESS_STALE_PHASE_MS = 6_000L // a phase this old gets a running count appended
 private const val PROGRESS_UNSUPPORTED_STRIKES = 4 // consecutive dead polls before giving up on live status
+
+// A cold debrid playback-info call waits on Jellyfin's ffprobe, which waits on jf-resolve's
+// candidate walk. Worst case measured: 53s. The SDK default of 30s cut it short and hung the
+// loading page, so this one call gets a much larger budget.
+private val PLAYBACK_INFO_TIMEOUT = 120.seconds
+private const val PLAYBACK_INFO_ATTEMPTS = 2
 
 private data class PrewarmedUrl(
     val itemId: UUID,

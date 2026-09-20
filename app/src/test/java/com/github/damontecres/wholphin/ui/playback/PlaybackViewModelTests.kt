@@ -52,6 +52,7 @@ import kotlinx.coroutines.InternalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
+import org.jellyfin.sdk.Jellyfin
 import org.jellyfin.sdk.api.client.ApiClient
 import org.jellyfin.sdk.api.client.extensions.mediaInfoApi
 import org.jellyfin.sdk.api.client.extensions.mediaSegmentsApi
@@ -86,6 +87,7 @@ class PlaybackViewModelTests {
 
     private val mockContext = mockk<Context>(relaxed = true)
     private val mockApi = mockk<ApiClient>(relaxed = true)
+    private val mockJellyfin = mockk<Jellyfin>(relaxed = true)
     private val mockNavigationManager = mockk<NavigationManager>(relaxed = true)
     private val mockPlaylistCreator = mockk<PlaylistCreator>(relaxed = true)
     private val mockItemPlaybackDao = mockk<ItemPlaybackDao>(relaxed = true)
@@ -112,6 +114,7 @@ class PlaybackViewModelTests {
         PlaybackViewModel(
             context = mockContext,
             api = mockApi,
+            jellyfin = mockJellyfin,
             navigationManager = mockNavigationManager,
             playlistCreator = mockPlaylistCreator,
             itemPlaybackDao = mockItemPlaybackDao,
@@ -177,6 +180,7 @@ class PlaybackViewModelTests {
 
         every { mockApi.userLibraryApi } returns mockUserLibraryApi
         every { mockApi.mediaInfoApi } returns mockMediaInfoApi
+        every { mockJellyfin.createApi(any(), any(), any(), any(), any()) } returns mockApi
         every { mockApi.videosApi } returns mockVideosApi
         every { mockApi.mediaSegmentsApi } returns mockMediaSegmentsApi
 
