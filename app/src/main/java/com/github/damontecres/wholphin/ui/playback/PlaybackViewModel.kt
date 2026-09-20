@@ -96,6 +96,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.jellyfin.sdk.api.client.ApiClient
 import org.jellyfin.sdk.api.client.extensions.mediaInfoApi
 import org.jellyfin.sdk.api.client.extensions.mediaSegmentsApi
@@ -177,6 +178,10 @@ class PlaybackViewModel
         // Escalating "Finding source…" ticker while a debrid source resolves (server-side during
         // getPostedPlaybackInfo, then the quick client resolve). Cancelled on success/error.
         private var loadStatusTicker: Job? = null
+
+        // Last phase jf-resolve reported for the resolve in flight. Kept so a failure can be
+        // explained in the server's own words instead of a Jellyfin error code.
+        private var lastResolveProgress: ResolveProgress? = null
 
         // Per-item position watcher (driven off the PLAYER's real duration, since debrid .strm has null
         // Jellyfin runtime): pre-warms the next episode ~PRELOAD_LEAD_MS before the end and drives the
@@ -714,16 +719,85 @@ class PlaybackViewModel
         }
 
         /**
-         * While a debrid resolve is in flight, escalate the loading message over time so the user can
-         * see it's actively working rather than a frozen spinner. Caller cancels the returned Job when
-         * the resolve completes. Mirrors the external-player path's ticker.
+         * Drive the loading page's status line while a debrid resolve is in flight.
+         *
+         * Asks jf-resolve what it is ACTUALLY doing — library lookup, source search, "checking
+         * source 3 of 9", subtitle hunt — and shows that, so the line distinguishes working from
+         * wedged. The old timer-driven ladder stays as the fallback for an older jf-resolve, a
+         * switched-off `resolve_progress_enabled`, or an unreachable resolver.
+         *
+         * Caller cancels the returned Job when the resolve completes.
          */
-        private fun startResolveStatusTicker(): Job =
+        private fun startResolveStatusTicker(itemId: UUID): Job =
             viewModelScope.launchDefault {
-                delay(8_000)
-                _state.update { it.copy(statusMessage = "Still searching — checking providers…") }
-                delay(17_000) // ~25s total
-                _state.update { it.copy(statusMessage = "Source provider slow to respond…") }
+                lastResolveProgress = null
+                // resolverPathFor() is a Jellyfin getItem, and Jellyfin may be busy probing this
+                // very .strm — so it is never allowed to hold up the status line.
+                val progressUrl =
+                    progressUrlFor(
+                        withTimeoutOrNull(PROGRESS_PATH_LOOKUP_TIMEOUT_MS) {
+                            runCatching { resolverPathFor(itemId) }.getOrNull()
+                        },
+                    )
+                val startedAt = System.currentTimeMillis()
+                var live = progressUrl != null
+                var misses = 0
+
+                while (isActive) {
+                    var showedLive = false
+                    if (live && progressUrl != null) {
+                        val progress = fetchResolveProgress(progressUrl)
+                        when {
+                            progress == null -> {
+                                // A server without this endpoint never answers usefully. Give up
+                                // after a few tries instead of polling it for the whole resolve.
+                                if (++misses >= PROGRESS_UNSUPPORTED_STRIKES) {
+                                    Timber.i("jf-resolve progress unavailable — using timed status text")
+                                    live = false
+                                }
+                            }
+
+                            progress.isDisabled -> live = false
+
+                            progress.hasMessage -> {
+                                misses = 0
+                                lastResolveProgress = progress
+                                _state.update { it.copy(statusMessage = decorateResolveProgress(progress)) }
+                                showedLive = true
+                            }
+
+                            // Known server, nothing to report yet: the resolve may not have reached
+                            // jf-resolve (Jellyfin probes the .strm first). Not a miss.
+                            else -> misses = 0
+                        }
+                    }
+                    if (!showedLive) {
+                        _state.update {
+                            it.copy(statusMessage = timedResolveStatus(System.currentTimeMillis() - startedAt))
+                        }
+                    }
+                    delay(PROGRESS_POLL_INTERVAL_MS)
+                }
+            }
+
+        /**
+         * Add a running count to a phase that has sat still for a while. The debrid library lookup
+         * alone runs 13-18s on a cold play; without this the line looks frozen exactly when the
+         * user is deciding whether to give up.
+         */
+        private fun decorateResolveProgress(progress: ResolveProgress): String =
+            if (progress.updatedMsAgo >= PROGRESS_STALE_PHASE_MS) {
+                "${progress.message} (${progress.elapsedMs / 1000}s)"
+            } else {
+                progress.message
+            }
+
+        /** The original timer-driven ladder, kept as the fallback when live progress isn't available. */
+        private fun timedResolveStatus(elapsedMs: Long): String =
+            when {
+                elapsedMs < 8_000 -> "Finding source…"
+                elapsedMs < 25_000 -> "Still searching — checking providers…"
+                else -> "Source provider slow to respond…"
             }
 
         /**
@@ -776,7 +850,7 @@ class PlaybackViewModel
                 // after it. Cancelled once we reach the player (or on error).
                 loadStatusTicker?.cancel()
                 _state.update { it.copy(loading = LoadingState.Loading, statusMessage = "Finding source…") }
-                loadStatusTicker = startResolveStatusTicker()
+                loadStatusTicker = startResolveStatusTicker(itemId)
 
                 val maxBitrate =
                     preferences.appPreferences.playbackPreferences.maxBitrate
@@ -813,8 +887,14 @@ class PlaybackViewModel
                 if (response.errorCode != null) {
                     Timber.e("Error in PostedPlaybackInfo: %s", response.errorCode)
                     loadStatusTicker?.cancel()
+                    // A Jellyfin error code here usually just means the .strm wouldn't resolve.
+                    // If jf-resolve told us why moments ago, say that instead.
+                    val resolveFailure = lastResolveProgress?.takeIf { it.isFailed }?.message
                     _state.update {
-                        it.copy(loading = LoadingState.Error(response.errorCode?.serialName), statusMessage = null)
+                        it.copy(
+                            loading = LoadingState.Error(resolveFailure ?: response.errorCode?.serialName),
+                            statusMessage = null,
+                        )
                     }
                     return@withContext
                 }
@@ -2027,6 +2107,12 @@ class PlaybackViewModel
 private const val PRELOAD_LEAD_MS = 5 * 60 * 1000L // pre-warm the next episode 5 min before the end
 private const val NEXTUP_TAIL_MS = 60 * 1000L // show Next Up card in the last 60s (credits) for debrid
 private const val PREWARM_TTL_MS = 45 * 60 * 1000L // debrid links live ~60 min; keep the stash under that
+
+// Live resolve-status polling (see ResolveProgressClient).
+private const val PROGRESS_POLL_INTERVAL_MS = 700L
+private const val PROGRESS_PATH_LOOKUP_TIMEOUT_MS = 6_000L
+private const val PROGRESS_STALE_PHASE_MS = 6_000L // a phase this old gets a running count appended
+private const val PROGRESS_UNSUPPORTED_STRIKES = 4 // consecutive dead polls before giving up on live status
 
 private data class PrewarmedUrl(
     val itemId: UUID,
