@@ -1748,7 +1748,26 @@ class PlaybackViewModel
                         playbackLanguageChoice = null,
                         prefs = preferences,
                     )
+                // DIAGNOSTIC: the auto-enable below has never been observed firing even
+                // with mode=ALWAYS and a synthesised menu present. Only the SUCCESS path
+                // was logged, so a null ordinal and a non-null currentPlayback.subtitleIndex
+                // were indistinguishable from outside. Log both inputs and both guards.
+                android.util.Log.i(
+                    "WholphinSUB",
+                    "synth auto-enable check: ordinal=" + autoOrdinal +
+                        " langs=" + trackLangs +
+                        " currentPlaybackSubIndex=" + state.value.currentPlayback?.subtitleIndex +
+                        " itemPlaybackSubIndex=" + state.value.currentItemPlayback?.subtitleIndex +
+                        " appSubtitleMode=" + preferences.userPreferences?.subtitleMode +
+                        " textGroups=" + textGroups.size,
+                )
                 if (autoOrdinal != null && state.value.currentPlayback?.subtitleIndex == null) {
+                    if (textGroups.getOrNull(autoOrdinal) == null) {
+                        android.util.Log.i(
+                            "WholphinSUB",
+                            "synth auto-enable ABORTED: no text group at ordinal " + autoOrdinal,
+                        )
+                    }
                     textGroups.getOrNull(autoOrdinal)?.let { group ->
                         val builder =
                             player.trackSelectionParameters
