@@ -1811,7 +1811,7 @@ class PlaybackViewModel
                 // so nothing got enabled. When the user's mode is ALWAYS, auto-enable the preferred
                 // (English) synthesised track — otherwise the menu is populated but subs stay OFF on
                 // first play of an unprobed .strm. One-shot: guarded by subtitleStreams being empty
-                // above and subtitleIndex being null here.
+                // above, which stops being true the moment we synthesise the menu below.
                 val trackLangs = textGroups.map { it.getTrackFormat(0).language }
                 val autoOrdinal =
                     streamChoiceService.chooseSynthSubtitleOrdinal(
@@ -1820,10 +1820,9 @@ class PlaybackViewModel
                         playbackLanguageChoice = null,
                         prefs = preferences,
                     )
-                // DIAGNOSTIC: the auto-enable below has never been observed firing even
-                // with mode=ALWAYS and a synthesised menu present. Only the SUCCESS path
-                // was logged, so a null ordinal and a non-null currentPlayback.subtitleIndex
-                // were indistinguishable from outside. Log both inputs and both guards.
+                // Keep logging the inputs: this is how the dead guard below was found (the
+                // ordinal was always right, the guard always false), and it is the only
+                // confirmation available that the auto-enable actually fired on a real play.
                 android.util.Log.i(
                     "WholphinSUB",
                     "synth auto-enable check: ordinal=" + autoOrdinal +
@@ -1833,7 +1832,14 @@ class PlaybackViewModel
                         " appSubtitleMode=" + preferences.userPreferences?.subtitleMode +
                         " textGroups=" + textGroups.size,
                 )
-                if (autoOrdinal != null && state.value.currentPlayback?.subtitleIndex == null) {
+                // NOT `== null`: changeStreams() stores `subtitleIndex ?: TrackIndex.DISABLED`, so a
+                // source with no subtitle streams to choose from — exactly the case that got us
+                // here — lands on DISABLED (-2) and the old null check could never pass. A
+                // *deliberate* user "subtitles off" is carried on itemPlayback and is honoured
+                // inside chooseSynthSubtitleOrdinal(), so anything below 0 means "server picked
+                // nothing", not "the user said no".
+                val currentSubIndex = state.value.currentPlayback?.subtitleIndex
+                if (autoOrdinal != null && (currentSubIndex == null || currentSubIndex < 0)) {
                     if (textGroups.getOrNull(autoOrdinal) == null) {
                         android.util.Log.i(
                             "WholphinSUB",
