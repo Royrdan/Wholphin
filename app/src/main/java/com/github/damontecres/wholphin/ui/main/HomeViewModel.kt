@@ -85,7 +85,15 @@ class HomeViewModel
 
         private var loadContext: LoadContext? = null
         private val requestedRows = mutableSetOf<Int>()
-        private val rowSemaphore = Semaphore(4)
+        /**
+         * How many rows may load at once.
+         *
+         * Jellyfin here runs on a 2-core container, so four rows in flight just make each other
+         * slower: measured over six rows, four-at-a-time and two-at-a-time finished in the same
+         * total time (~3.5s vs ~3.3s), but with four the requests from other rows - Continue
+         * Watching's, and unrelated pages like Favourites - went roughly 3x slower (1.8s vs 0.6s).
+         */
+        private val rowSemaphore = Semaphore(2)
 
         fun init() {
             viewModelScope.launchIO {

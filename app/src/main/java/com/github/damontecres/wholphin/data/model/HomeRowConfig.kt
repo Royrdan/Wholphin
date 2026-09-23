@@ -190,15 +190,6 @@ sealed interface HomeRowConfig {
         val name: String,
         val getItems: GetItemsRequest,
         override val viewOptions: HomeRowViewOptions = HomeRowViewOptions(),
-        /**
-         * Drop already-watched items on the device instead of asking the server for `isPlayed=false`.
-         *
-         * For a series, the server has no stored watched flag - it walks every episode of every
-         * matching series to work one out, which measured 6.5-8s per row here (38s with four rows
-         * in flight) versus 0.2-0.8s for the same query unfiltered. The watched flag comes back
-         * free on each item, so over-fetch and filter here instead.
-         */
-        val unplayedOnly: Boolean = false,
     ) : HomeRowConfig {
         override fun updateViewOptions(viewOptions: HomeRowViewOptions): GetItems = this.copy(viewOptions = viewOptions)
     }
