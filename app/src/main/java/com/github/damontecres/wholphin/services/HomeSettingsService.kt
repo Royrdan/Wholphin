@@ -363,15 +363,22 @@ class HomeSettingsService
             parentId: UUID,
             kind: BaseItemKind,
             genreId: UUID,
-        ): HomeRowConfig.GetItems =
-            HomeRowConfig.GetItems(
+        ): HomeRowConfig.GetItems {
+            // A series has no stored watched flag, so isPlayed=false makes the server walk every
+            // episode of every matching series: 6.5-8s per row, 38s with four rows in flight, and
+            // it starves everything else on a 2-core box. Filter those on the device instead - the
+            // watched flag rides along on each item for free. A movie's watched flag is a single
+            // stored value, so that one stays on the server where it costs ~0.1s.
+            val unplayedOnDevice = kind != BaseItemKind.MOVIE
+            return HomeRowConfig.GetItems(
                 name = name,
+                unplayedOnly = unplayedOnDevice,
                 getItems =
                     GetItemsRequest(
                         parentId = parentId,
                         includeItemTypes = listOf(kind),
                         genreIds = listOf(genreId),
-                        isPlayed = false,
+                        isPlayed = if (unplayedOnDevice) null else false,
                         recursive = true,
                         // Indexed sort (newest first) instead of RANDOM: RANDOM forces the server to
                         // shuffle the whole recursive set, which times out when many genre rows load
@@ -382,6 +389,7 @@ class HomeSettingsService
                         enableTotalRecordCount = false,
                     ),
             )
+        }
 
         /**
          * Rank the genres the user actually watches, most-played first, for a given library.
@@ -1057,12 +1065,20 @@ class HomeSettingsService
                 }
 
                 is HomeRowConfig.GetItems -> {
+                    // When the row filters watched items on the device, ask for more than the row
+                    // shows so it still fills up after the watched ones are dropped.
+                    val fetchLimit =
+                        if (row.unplayedOnly) {
+                            (limit * UNPLAYED_OVER_FETCH).coerceAtMost(MAX_UNPLAYED_FETCH)
+                        } else {
+                            limit
+                        }
                     val request =
                         row.getItems.let {
                             if (it.limit == null) {
                                 it.copy(
                                     userId = userDto.id,
-                                    limit = limit,
+                                    limit = fetchLimit,
                                 )
                             } else {
                                 it.copy(
@@ -1071,6 +1087,8 @@ class HomeSettingsService
                             }
                         }
                     if (usePaging) {
+                        // The "view more" grid pages through the server's own results, so it cannot
+                        // drop watched items here; it shows everything matching the row.
                         ApiRequestPager(
                             api,
                             request,
@@ -1082,7 +1100,13 @@ class HomeSettingsService
                         GetItemsRequestHandler
                             .execute(api, request)
                             .content.items
-                            .map { BaseItem(it, row.viewOptions.useSeries) }
+                            .let { items ->
+                                if (row.unplayedOnly) {
+                                    items.filter { it.userData?.played != true }.take(limit)
+                                } else {
+                                    items
+                                }
+                            }.map { BaseItem(it, row.viewOptions.useSeries) }
                     }.let {
                         Success(
                             StringStringProvider(row.name),
@@ -1395,6 +1419,12 @@ class HomeSettingsService
 
             /** Max taste-ranked genre rows to generate per library in the default layout */
             const val MAX_GENRE_ROWS = 6
+
+            /** How many extra items to pull when watched ones are dropped on the device */
+            const val UNPLAYED_OVER_FETCH = 3
+
+            /** Ceiling on that over-fetch, so a big row can't turn into a huge response */
+            const val MAX_UNPLAYED_FETCH = 100
         }
     }
 
