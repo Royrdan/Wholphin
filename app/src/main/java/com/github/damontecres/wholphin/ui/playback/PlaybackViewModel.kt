@@ -465,6 +465,15 @@ class PlaybackViewModel
 
                 Timber.i("Playing ${item.id}")
 
+                // Stop the outgoing playback BEFORE the (possibly slow) stream lookup.
+                // A player left running here plays the old file to its end and fires
+                // STATE_ENDED against the already-advanced playlist index, which pops
+                // the Next Up card for the wrong episode (double play-next) and keeps
+                // the old audio running under the next episode loading screen.
+                if (currentPlayer.value != null) {
+                    withContext(WholphinDispatchers.Main) { player.stop() }
+                }
+
                 // New item, so we can clear the media segment tracker & subtitle cues
                 resetSegmentState()
                 _state.update { it.copy(subtitleCues = emptyList()) }
@@ -1436,6 +1445,13 @@ class PlaybackViewModel
         override fun onPlaybackStateChanged(playbackState: Int) {
             if (playbackState == Player.STATE_ENDED) {
                 Timber.v("Playback state is STATE_ENDED")
+                if (playlistJob?.isActive == true) {
+                    // A play()/advance is mid-flight: this ENDED belongs to the item we
+                    // are leaving, and state.nextItem() already points one episode too
+                    // far. Acting on it double-advances the playlist.
+                    Timber.i("Ignoring STATE_ENDED: playlist item change in flight")
+                    return
+                }
                 viewModelScope.launchDefault {
                     when (val nextItem = state.value.nextItem()) {
                         is PlaylistItem.Intro -> {
