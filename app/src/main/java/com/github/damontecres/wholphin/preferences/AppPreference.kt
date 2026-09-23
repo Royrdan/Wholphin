@@ -978,11 +978,13 @@ sealed interface AppPreference<Pref, T> {
             )
 
         /**
-         * How long a protected profile stays unlocked after the app leaves the foreground.
+         * How long the app stays signed in after it leaves the foreground.
          *
-         * Without this, dropping to the launcher for a second - or the app being killed in the
-         * background - means a full sign-in again, and the page you were on is lost. 0 keeps the
-         * old behaviour of asking every single time.
+         * Relaxes BOTH ways of being asked to sign in again: [SignInAuto] turned off, and a profile
+         * with [ProtectProfilePreference] set. Without it, dropping to the launcher for a second -
+         * or the app being killed in the background - means signing in again and losing the page
+         * you were on. Sits next to [SignInAuto] because that is the switch that makes most people
+         * see the prompt. 0 keeps the old behaviour of asking every single time.
          */
         val ProfileProtectionGrace =
             AppSliderPreference<AppPreferences>(
@@ -1144,6 +1146,7 @@ val basicPreferences =
             preferences =
                 listOf(
                     AppPreference.SignInAuto,
+                    AppPreference.ProfileProtectionGrace,
                     AppPreference.RememberSelectedTab,
                     AppPreference.PlayThemeMusic,
                     AppPreference.SubtitleStyle,
@@ -1175,7 +1178,6 @@ val basicPreferences =
             preferences =
                 listOf(
                     AppPreference.ProtectProfilePreference,
-                    AppPreference.ProfileProtectionGrace,
                     AppPreference.CustomizeHome,
                     AppPreference.UserPinnedNavDrawerItems,
                     AppPreference.UserInterfaceLanguage,
