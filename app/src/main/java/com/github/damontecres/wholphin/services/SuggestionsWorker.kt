@@ -9,6 +9,7 @@ import com.github.damontecres.wholphin.data.ServerRepository
 import com.github.damontecres.wholphin.preferences.AppPreference
 import com.github.damontecres.wholphin.preferences.AppPreferences
 import com.github.damontecres.wholphin.util.GetItemsRequestHandler
+import com.github.damontecres.wholphin.util.UnplayedFilter
 import com.github.damontecres.wholphin.util.WholphinDispatchers
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
@@ -336,10 +337,16 @@ class SuggestionsWorker
                     enableTotalRecordCount = false,
                     imageTypeLimit = 0,
                 )
-            return GetItemsRequestHandler
-                .execute(api, request)
-                .content.items
-                .orEmpty()
+            // Suggestions fire three of these per library, all unwatched-only. On a series that is
+            // the 19s query - see [UnplayedFilter]. Let it strip the filter and drop watched items
+            // here instead.
+            val filterHere = UnplayedFilter.appliesTo(request)
+            val items =
+                GetItemsRequestHandler
+                    .execute(api, if (filterHere) UnplayedFilter.rewrite(request) else request)
+                    .content.items
+                    .orEmpty()
+            return if (filterHere) UnplayedFilter.apply(items, limit) else items
         }
 
         companion object {
