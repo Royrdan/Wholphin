@@ -723,12 +723,6 @@ class PlaybackViewModel
                 }
         }
 
-        /** True when a fresh pre-warmed URL is stashed for [itemId]; does NOT consume it. */
-        private fun hasFreshPrewarm(itemId: UUID): Boolean {
-            val p = prewarmedNext ?: return false
-            return p.itemId == itemId && System.currentTimeMillis() - p.atMs < PREWARM_TTL_MS
-        }
-
         /** One-shot fetch of a fresh pre-warmed URL for [itemId], or null if absent/stale. */
         private fun consumePrewarm(itemId: UUID): String? {
             val p = prewarmedNext ?: return null
@@ -947,15 +941,17 @@ class PlaybackViewModel
                         autoOpenLiveStream = true,
                     )
 
-                // Pre-warm bypass. Jellyfin force-probes every .strm inside getPostedPlaybackInfo
-                // (remote ffprobe of the CDN file, ~10s) and blocks the response on it — that wait
-                // is the whole episode-advance gap. When the pre-warm already holds a validated
-                // direct URL, synthesise the response from the item static source and start
-                // playback now; the real request still runs in the background so Jellyfin metadata
-                // stays fresh, and its stream lists backfill our menus when it lands. Never taken
-                // on the transcode-fallback re-entry (enableDirectPlay=false).
+                // Probe bypass. Jellyfin force-probes every .strm inside getPostedPlaybackInfo
+                // (remote ffprobe of the CDN file, ~10s) and blocks the response on it — stacked on
+                // top of the actual stream search for cold plays. For a debrid source the app can
+                // do everything itself: synthesise the response from the item static source and let
+                // the existing downstream take the pre-warmed URL (auto-advance) or resolve one
+                // live under the status ticker (manual/cold play). The real request still runs in
+                // the background so Jellyfin metadata stays fresh, and its stream lists backfill
+                // our menus when it lands. Never taken on the transcode-fallback re-entry
+                // (enableDirectPlay=false).
                 val bypassSource =
-                    if (enableDirectPlay && hasFreshPrewarm(itemId)) {
+                    if (enableDirectPlay) {
                         item.data.mediaSources
                             ?.firstOrNull { sourceId == null || it.id == sourceId }
                             ?.takeIf {
@@ -969,7 +965,7 @@ class PlaybackViewModel
                     }
                 val bypassResponse =
                     bypassSource?.let { source ->
-                        Timber.i("prewarm bypass: starting %s without waiting for getPostedPlaybackInfo", itemId)
+                        Timber.i("probe bypass: starting %s without waiting for getPostedPlaybackInfo", itemId)
                         viewModelScope.launchIO {
                             runCatching { requestPlaybackInfo(itemId, playbackInfoDto) }
                                 .onSuccess { hydrateStreamsFromBackgroundProbe(itemId, sourceId, it) }
@@ -2058,7 +2054,7 @@ class PlaybackViewModel
             val audioStreams = getAudioStreams(source)
             val subtitleStreams = getSubtitleStreams(source)
             if (audioStreams.isEmpty() && subtitleStreams.isEmpty()) return
-            Timber.i("prewarm bypass: hydrated %d audio / %d subtitle stream(s) for %s", audioStreams.size, subtitleStreams.size, itemId)
+            Timber.i("probe bypass: hydrated %d audio / %d subtitle stream(s) for %s", audioStreams.size, subtitleStreams.size, itemId)
             updateCurrentMedia {
                 it.copy(
                     audioStreams = audioStreams,

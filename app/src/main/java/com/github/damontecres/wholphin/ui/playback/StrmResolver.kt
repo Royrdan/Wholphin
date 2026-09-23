@@ -20,7 +20,9 @@ import java.net.URL
  */
 
 private const val STRM_RESOLVE_CONNECT_TIMEOUT_MS = 15_000
-private const val STRM_RESOLVE_READ_TIMEOUT_MS = 45_000
+// Primary path for cold plays since the probe bypass: must outlast a deep jf-resolve
+// candidate walk (up to ~2 min), same window the patient PlaybackInfo client used.
+private const val STRM_RESOLVE_READ_TIMEOUT_MS = 120_000
 
 /** True if [this] looks like a jf-resolve resolver endpoint. */
 fun String?.isJfResolvePath(): Boolean = this?.contains("/api/stream/resolve/") == true
