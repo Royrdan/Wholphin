@@ -92,8 +92,16 @@ fun createDeviceProfile(
 
     val supportsHevc = mediaTest.supportsHevc()
     val supportsHevcMain10 = mediaTest.supportsHevcMain10()
-    val hevcMainLevel = mediaTest.getHevcMainLevel()
-    val hevcMain10Level = mediaTest.getHevcMain10Level()
+    // Custom: the Shield advertises HEVC level 5.1 as its ceiling but decodes 5.2 fine (5.1 vs 5.2
+    // differ only in max bitrate / luma sample rate). Without this floor Jellyfin refuses DirectPlay
+    // on level-156 sources with TranscodeReason=VideoLevelNotSupported and falls back to a remux,
+    // which strips embedded subtitles (so subs show as "on" but never render).
+    // Mirrors the existing KnownDefects.supportsHi10P52 override for AVC High10.
+    // 156 == level 5.2 in Jellyfin numbering, see MediaCodecCapabilitiesTest.hevcLevels.
+    // Guarded on > 0 so a device with no HEVC/Main10 decoder is never granted support it lacks.
+    val hevcLevelFloor = 156
+    val hevcMainLevel = mediaTest.getHevcMainLevel().let { if (it > 0) maxOf(it, hevcLevelFloor) else it }
+    val hevcMain10Level = mediaTest.getHevcMain10Level().let { if (it > 0) maxOf(it, hevcLevelFloor) else it }
     val supportsAVC = mediaTest.supportsAVC()
     val supportsAVCHigh10 = mediaTest.supportsAVCHigh10() || supportsHi10P52
     val avcMainLevel = mediaTest.getAVCMainLevel()
