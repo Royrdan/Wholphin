@@ -829,6 +829,7 @@
     <string name="display_toggles_title">Ratings display</string>
     <string name="display_toggles_summary">Customize which to display</string>
     <string name="profile_protection">Profile protection</string>
+    <string name="profile_protection_grace">Stay unlocked for</string>
     <string name="continue_watching_click_behavior">Continue watching/Next up click behavior</string>
     <string name="continue_watching_click_summary_on">Play on click</string>
     <string name="continue_watching_click_summary_off">Show details on click</string>

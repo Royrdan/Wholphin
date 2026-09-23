@@ -977,6 +977,34 @@ sealed interface AppPreference<Pref, T> {
                 title = R.string.profile_protection,
             )
 
+        /**
+         * How long a protected profile stays unlocked after the app leaves the foreground.
+         *
+         * Without this, dropping to the launcher for a second - or the app being killed in the
+         * background - means a full sign-in again, and the page you were on is lost. 0 keeps the
+         * old behaviour of asking every single time.
+         */
+        val ProfileProtectionGrace =
+            AppSliderPreference<AppPreferences>(
+                title = R.string.profile_protection_grace,
+                defaultValue = DEFAULT_PROTECTION_GRACE_MINUTES,
+                min = 0,
+                max = 240,
+                interval = 5,
+                getter = { it.protectionGraceMinutes },
+                setter = { prefs, value ->
+                    prefs.update { profileProtectionGraceMinutes = value.toInt() }
+                },
+                summarizer = { value ->
+                    when {
+                        value == null -> null
+                        value <= 0L -> "Always ask when reopening"
+                        value == 1L -> "1 minute after leaving the app"
+                        else -> "$value minutes after leaving the app"
+                    }
+                },
+            )
+
         val ImageDiskCacheSize =
             AppSliderPreference<AppPreferences>(
                 title = R.string.image_cache_size,
@@ -1147,6 +1175,7 @@ val basicPreferences =
             preferences =
                 listOf(
                     AppPreference.ProtectProfilePreference,
+                    AppPreference.ProfileProtectionGrace,
                     AppPreference.CustomizeHome,
                     AppPreference.UserPinnedNavDrawerItems,
                     AppPreference.UserInterfaceLanguage,

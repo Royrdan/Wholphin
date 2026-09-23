@@ -33,6 +33,8 @@ import androidx.tv.material3.Surface
 import com.github.damontecres.wholphin.data.ServerRepository
 import com.github.damontecres.wholphin.preferences.AppPreferences
 import com.github.damontecres.wholphin.preferences.PlayerBackend
+import com.github.damontecres.wholphin.preferences.update
+import com.github.damontecres.wholphin.preferences.withinProtectionGrace
 import com.github.damontecres.wholphin.services.AppUpgradeHandler
 import com.github.damontecres.wholphin.services.BackdropService
 import com.github.damontecres.wholphin.services.DatePlayedInvalidationService
@@ -73,6 +75,8 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.launchIn
@@ -360,6 +364,10 @@ class MainActivity : AppCompatActivity() {
     override fun onStop() {
         super.onStop()
         Timber.d("onStop")
+        // Stamp when the app left the foreground so a protected profile can be let straight back in
+        // if the user returns within the grace period. Covers the launcher, the screen going off,
+        // and the app being killed in the background - all the cases that used to force a sign-in.
+        viewModel.recordForegroundExit()
         screensaverService.stop(true)
         tvProviderSchedulerService.launchOneTimeRefresh()
     }
@@ -468,6 +476,20 @@ class MainActivityViewModel
     ) : ViewModel() {
         private val mutex = Mutex()
 
+        /**
+         * Remember when the app left the foreground, for [AppPreferences.withinProtectionGrace].
+         *
+         * Deliberately NOT on the activity's scope: this runs from onStop, and the process is often
+         * killed shortly after, so the write has to outlive the activity.
+         */
+        fun recordForegroundExit() {
+            CoroutineScope(SupervisorJob() + WholphinDispatchers.IO).launch(ExceptionHandler()) {
+                preferences.updateData {
+                    it.update { lastForegroundExitMs = System.currentTimeMillis() }
+                }
+            }
+        }
+
         fun appStart(intent: Intent?) {
             viewModelScope.launchDefault {
                 mutex.withLock {
@@ -537,18 +559,26 @@ class MainActivityViewModel
                         appUpgradeHandler.copySubfont(false)
                         val prefs =
                             preferences.data.firstOrNull() ?: AppPreferences.getDefaultInstance()
-                        val profileProtected =
+                        // Inside the grace window a protected profile is treated as already
+                        // unlocked, so dropping to the launcher for a moment does not cost a full
+                        // sign-in (and the page you were on).
+                        val withinGrace = prefs.withinProtectionGrace(System.currentTimeMillis())
+                        val isProtected =
                             serverRepository.current.value
                                 ?.user
                                 ?.isProtected == true
-                        if (prefs.signInAutomatically && !profileProtected) {
+                        val profileProtected = isProtected && !withinGrace
+                        // Restore on the grace path too: a protected profile otherwise takes the
+                        // full setup route even with "sign in automatically" off, which is exactly
+                        // the prompt being skipped here.
+                        if ((prefs.signInAutomatically || withinGrace) && !profileProtected) {
                             val current =
                                 serverRepository.restoreSession(
                                     prefs.currentServerId?.toUUIDOrNull(),
                                     prefs.currentUserId?.toUUIDOrNull(),
                                 )
                             if (current != null) {
-                                if (current.user.isProtected) {
+                                if (current.user.isProtected && !withinGrace) {
                                     setupNavigationManager.navigateTo(
                                         SetupDestination.UserList(
                                             current.server,

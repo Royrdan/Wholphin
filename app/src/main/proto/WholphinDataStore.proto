@@ -249,4 +249,12 @@ message AppPreferences {
   PhotoPreferences photo_preferences = 12;
   MusicPreferences music_preferences = 13;
   ExperimentalPreferences experimental_preferences = 14;
+
+  // How long a protected profile stays unlocked after the app leaves the foreground.
+  // 0 means always ask. Declared optional so an install that predates this field falls back to the
+  // default rather than reading proto3's zero and silently meaning "always ask".
+  optional int32 profile_protection_grace_minutes = 15;
+
+  // When the app last left the foreground, used to measure the grace period above.
+  int64 last_foreground_exit_ms = 16;
 }
