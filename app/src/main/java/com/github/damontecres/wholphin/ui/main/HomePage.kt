@@ -319,6 +319,15 @@ fun HomePageContent(
     val rowFocusRequesters = remember(homeRows.size) { List(homeRows.size) { FocusRequester() } }
     var firstFocused by remember { mutableStateOf(false) }
 
+    /**
+     * The row whose "Loading..." placeholder currently holds the highlight, or -1.
+     *
+     * The placeholder is a plain focusable with no focus requester of its own, so when the real row
+     * replaces it the focused node is destroyed and focus falls back to the nav drawer - which
+     * slides the side panel open mid-scroll. Remembering it lets the finished row take focus back.
+     */
+    var loadingFocusRow by remember { mutableStateOf(-1) }
+
     val currentPosition by rememberUpdatedState(position)
     val currentOnFocusPosition by rememberUpdatedState(onFocusPosition)
     val currentOnClickPlay by rememberUpdatedState(onClickPlay)
@@ -410,7 +419,10 @@ fun HomePageContent(
                                     FocusableItemRow(
                                         title = r.title.getString(),
                                         subtitle = stringResource(R.string.loading),
-                                        modifier = rowModifier,
+                                        modifier =
+                                            rowModifier.onFocusChanged {
+                                                if (it.isFocused) loadingFocusRow = rowIndex
+                                            },
                                     )
                                 }
 
@@ -424,6 +436,27 @@ fun HomePageContent(
                                 }
 
                                 is HomeRowLoadingState.Success -> {
+                                    // This row just replaced the placeholder that held the
+                                    // highlight, so take focus back before the nav drawer claims it.
+                                    if (loadingFocusRow == rowIndex) {
+                                        LaunchedEffect(rowIndex) {
+                                            if (row.items.isNotEmpty()) {
+                                                // The row is composed but may not be laid out yet,
+                                                // so give it a frame before giving up. Clear the
+                                                // marker last: clearing it first disposes this
+                                                // effect and cancels the retry.
+                                                if (!rowFocusRequesters[rowIndex].tryRequestFocus()) {
+                                                    delay(50)
+                                                    rowFocusRequesters[rowIndex].tryRequestFocus()
+                                                }
+                                                loadingFocusRow = -1
+                                            } else {
+                                                // Nothing to focus here - an empty row draws
+                                                // nothing at all. Hand off to the row below.
+                                                loadingFocusRow = rowIndex + 1
+                                            }
+                                        }
+                                    }
                                     if (row.items.isNotEmpty()) {
                                         val viewOptions = row.viewOptions
                                         ItemRow(
