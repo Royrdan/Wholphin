@@ -112,6 +112,7 @@ import org.jellyfin.sdk.model.api.BaseItemKind
 import org.jellyfin.sdk.model.api.ImageType
 import org.jellyfin.sdk.model.api.MediaSegmentDto
 import org.jellyfin.sdk.model.api.MediaSegmentType
+import org.jellyfin.sdk.model.api.MediaSourceInfo
 import org.jellyfin.sdk.model.api.MediaStreamType
 import org.jellyfin.sdk.model.api.MediaType
 import org.jellyfin.sdk.model.api.PlayMethod
@@ -128,6 +129,7 @@ import org.jellyfin.sdk.model.serializer.toUUIDOrNull
 import timber.log.Timber
 import java.util.Date
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.roundToInt
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
@@ -192,6 +194,21 @@ class PlaybackViewModel
         private var positionWatchJob: Job? = null
         private var prewarmJob: Job? = null
         private var prewarmedNext: PrewarmedUrl? = null
+
+        // Media sources the background probe returned, keyed by item + source id. The probe
+        // bypass (see changeStreams) starts playback from the item's STATIC source, which on a
+        // never-probed .strm carries an empty mediaStreams list; the real getPostedPlaybackInfo
+        // lands seconds later. Keeping its source here lets a later changeStreams on the same
+        // item (an audio switch, a server-index subtitle switch) start from a source whose
+        // stream indexes actually exist. Without it the index lookup returns NOT_FOUND and we
+        // fall back to transcoding a remote debrid file, which never gets going at all.
+        private val probedSources = ConcurrentHashMap<String, MediaSourceInfo>()
+
+        // Subtitle streams the background probe reported while the player had not yet said
+        // whether it has embedded text tracks of its own. Applied by onTracksChanged only if it
+        // turns out to have none (externally delivered subtitles). Never applied over the
+        // synthesised menu.
+        private var pendingProbeSubtitleStreams: List<SimpleMediaStream>? = null
 
         val controllerViewState =
             ControllerViewState(
@@ -493,6 +510,7 @@ class PlaybackViewModel
                 }
                 this@PlaybackViewModel.currentItem = playlistItem
                 this@PlaybackViewModel.itemId = item.id
+                pendingProbeSubtitleStreams = null
 
                 val isLiveTv = item.type == BaseItemKind.TV_CHANNEL
                 val base = item.data
@@ -950,22 +968,32 @@ class PlaybackViewModel
                 // the background so Jellyfin metadata stays fresh, and its stream lists backfill
                 // our menus when it lands. Never taken on the transcode-fallback re-entry
                 // (enableDirectPlay=false).
-                val bypassSource =
+                val staticBypassSource =
                     if (enableDirectPlay) {
                         item.data.mediaSources
                             ?.firstOrNull { sourceId == null || it.id == sourceId }
-                            ?.takeIf {
-                                it.protocol == MediaProtocol.HTTP &&
-                                    it.isRemote &&
-                                    it.supportsDirectPlay &&
-                                    it.path.isJfResolvePath()
-                            }
                     } else {
                         null
                     }
+                // Prefer the source an earlier background probe returned for this exact item +
+                // source id: same debrid source, but with its mediaStreams filled in. A source
+                // with no streams makes every later index lookup (audio or subtitle) return
+                // NOT_FOUND, which drops us into transcoding a remote CDN file.
+                val bypassSource =
+                    (
+                        staticBypassSource
+                            ?.id
+                            ?.let { probedSources[probeKey(itemId, it)] }
+                            ?.takeIf { !it.mediaStreams.isNullOrEmpty() && it.isDebridDirectPlay() }
+                            ?: staticBypassSource
+                    )?.takeIf { it.isDebridDirectPlay() }
                 val bypassResponse =
                     bypassSource?.let { source ->
-                        Timber.i("probe bypass: starting %s without waiting for getPostedPlaybackInfo", itemId)
+                        Timber.i(
+                            "probe bypass: starting %s without waiting for getPostedPlaybackInfo (streams=%d)",
+                            itemId,
+                            source.mediaStreams?.size ?: 0,
+                        )
                         viewModelScope.launchIO {
                             runCatching { requestPlaybackInfo(itemId, playbackInfoDto) }
                                 .onSuccess { hydrateStreamsFromBackgroundProbe(itemId, sourceId, it) }
@@ -1917,6 +1945,28 @@ class PlaybackViewModel
                     }
                 }
             }
+            if (textGroups.isNotEmpty()) {
+                // Embedded text tracks exist, so the synthesised menu owns subtitles from here on.
+                pendingProbeSubtitleStreams = null
+            } else if (tracks.groups.isNotEmpty()) {
+                // The player has reported its tracks and has no text tracks at all, so the
+                // embedded-subs path cannot serve this file. Now — and only now — use the
+                // subtitle list the background probe parked for us (external delivery).
+                pendingProbeSubtitleStreams?.let { parked ->
+                    pendingProbeSubtitleStreams = null
+                    if (state.value.currentMediaInfo.subtitleStreams.isEmpty()) {
+                        android.util.Log.i(
+                            "WholphinSUB",
+                            "no player text tracks: using ${parked.size} probed server subtitle stream(s)",
+                        )
+                        _state.update {
+                            it.copy(
+                                currentMediaInfo = it.currentMediaInfo.copy(subtitleStreams = parked),
+                            )
+                        }
+                    }
+                }
+            }
             updateCurrentPlayback {
                 it?.copy(
                     tracks = checkForSupport(tracks),
@@ -2047,21 +2097,77 @@ class PlaybackViewModel
             sourceId: String?,
             response: PlaybackInfoResponse,
         ) {
-            if (this.itemId != itemId) return
             val source =
                 response.mediaSources.firstOrNull { sourceId == null || it.id == sourceId }
                     ?: return
+            // Cache before the current-item check: this is the only copy of a source carrying
+            // real stream indexes for a .strm the bypass had to start from an empty one, and a
+            // pre-warmed probe can land after the user has already moved on.
+            source.id?.let { id ->
+                // Bounded: one entry per episode played in this session is plenty.
+                if (probedSources.size > PROBE_CACHE_LIMIT) probedSources.clear()
+                probedSources[probeKey(itemId, id)] = source
+            }
+            if (this.itemId != itemId) return
             val audioStreams = getAudioStreams(source)
             val subtitleStreams = getSubtitleStreams(source)
             if (audioStreams.isEmpty() && subtitleStreams.isEmpty()) return
-            Timber.i("probe bypass: hydrated %d audio / %d subtitle stream(s) for %s", audioStreams.size, subtitleStreams.size, itemId)
+
+            // Subtitles are NOT ours to fill in here by default. On this path ExoPlayer demuxes
+            // the embedded text tracks itself, and the menu synthesised from those tracks is the
+            // only one that both auto-enables and switches track in place. Overwriting it with
+            // the server's list closed the auto-enable gate (subtitleStreams stopped being
+            // empty) AND sent a manual pick down the server-index route: full restart ->
+            // index NOT_FOUND on the empty static source -> transcode fallback -> nothing plays.
+            // null = the player has not reported any tracks yet.
+            val playerHasTextTracks: Boolean? =
+                onMain {
+                    val groups = player.currentTracks.groups
+                    if (groups.isEmpty()) null else groups.any { it.type == C.TRACK_TYPE_TEXT }
+                }
+            val menu = state.value.currentMediaInfo
+            val takeSubtitles =
+                when {
+                    // The synthesised menu owns subtitles; leave it alone.
+                    menu.synthesisedSubtitles -> false
+                    // A real server-built menu is already up: a fresher list is an improvement.
+                    menu.subtitleStreams.isNotEmpty() -> true
+                    // Player has tracks but no text ones, so subtitles must come from the server.
+                    playerHasTextTracks == false -> true
+                    else -> false
+                }
+            pendingProbeSubtitleStreams =
+                if (!takeSubtitles && playerHasTextTracks == null && subtitleStreams.isNotEmpty()) {
+                    subtitleStreams
+                } else {
+                    null
+                }
+            Timber.i(
+                "probe bypass: hydrated %d audio / %d subtitle stream(s) for %s (subsTaken=%b playerText=%s)",
+                audioStreams.size,
+                subtitleStreams.size,
+                itemId,
+                takeSubtitles,
+                playerHasTextTracks,
+            )
             updateCurrentMedia {
-                it.copy(
-                    audioStreams = audioStreams,
-                    subtitleStreams = subtitleStreams,
-                )
+                var updated = it
+                if (audioStreams.isNotEmpty()) updated = updated.copy(audioStreams = audioStreams)
+                if (takeSubtitles) updated = updated.copy(subtitleStreams = subtitleStreams)
+                updated
             }
         }
+
+        private fun probeKey(
+            itemId: UUID,
+            sourceId: String,
+        ) = "$itemId|$sourceId"
+
+        private fun MediaSourceInfo.isDebridDirectPlay(): Boolean =
+            protocol == MediaProtocol.HTTP &&
+                isRemote &&
+                supportsDirectPlay &&
+                path.isJfResolvePath()
 
         internal suspend fun updateCurrentMedia(block: (CurrentMediaInfo) -> CurrentMediaInfo) =
             withContext(WholphinDispatchers.Default) {
@@ -2281,6 +2387,7 @@ class PlaybackViewModel
     }
 
 private const val PRELOAD_LEAD_MS = 5 * 60 * 1000L // pre-warm the next episode 5 min before the end
+private const val PROBE_CACHE_LIMIT = 16 // background-probe sources kept per playback session
 private const val NEXTUP_TAIL_MS = 60 * 1000L // show Next Up card in the last 60s (credits) for debrid
 private const val PREWARM_TTL_MS = 45 * 60 * 1000L // debrid links live ~60 min; keep the stash under that
 
