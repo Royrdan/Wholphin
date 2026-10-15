@@ -55,6 +55,7 @@ import dagger.assisted.AssistedInject
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
@@ -113,13 +114,29 @@ class RecommendedViewModel
                                 listOf(HomeRowLoadingState.Loading(ResStringProvider(R.string.suggestions))),
                     )
                 }
+                // Rows load in parallel, so a row that needs to know what the rows above it ended
+                // up showing waits on these. Always completed, including on failure, so a waiting
+                // row can never hang on a broken one.
+                val loadedRows = recommendedRows.map { CompletableDeferred<List<BaseItem?>>() }
                 val jobs =
                     recommendedRows.mapIndexed { index, row ->
                         val title = ResStringProvider(row.title)
                         viewModelScope.launchIO {
                             val result =
                                 try {
-                                    val items = execute(row, limit)
+                                    var items = execute(row, limit)
+                                    if (row.dedupeAgainstEarlierRows && index > 0) {
+                                        val shown =
+                                            (0 until index)
+                                                .flatMap { loadedRows[it].await() }
+                                                .mapNotNull { it?.data?.seriesId }
+                                                .toSet()
+                                        items =
+                                            items.filterNot { item ->
+                                                item?.data?.seriesId?.let { it in shown } == true
+                                            }
+                                    }
+                                    loadedRows[index].complete(items)
                                     HomeRowLoadingState.Success(
                                         title,
                                         items,
@@ -127,6 +144,7 @@ class RecommendedViewModel
                                         showViewMore = items.size >= limit,
                                     )
                                 } catch (ex: Exception) {
+                                    loadedRows[index].complete(emptyList())
                                     Timber.e(ex, "Exception fetching %s", title)
                                     HomeRowLoadingState.Error(title, null, ex)
                                 }
@@ -158,9 +176,11 @@ class RecommendedViewModel
         ): List<BaseItem?> =
             if (limit != null) {
                 val request = row.handler.prepare(row.request, 0, limit, false)
-                row.handler
-                    .execute(api, request)
-                    .toBaseItems(api, true)
+                row.transform(
+                    row.handler
+                        .execute(api, request)
+                        .toBaseItems(api, true),
+                )
             } else {
                 ApiRequestPager(
                     api,
@@ -343,6 +363,16 @@ data class RecommendedRow<T>(
     val title: Int,
     val handler: RequestHandler<T>,
     val request: T,
+    /**
+     * Optional post-fetch filter, eg keep one card per series. Only applied on the non-paged
+     * path, which is the one the recommended tabs use (maxItemsPerRow is always set).
+     */
+    val transform: (List<BaseItem?>) -> List<BaseItem?> = { it },
+    /**
+     * Drop any item whose series already appeared in a row above this one, so eg a show that is
+     * in "Continue watching" is not listed again under "Next up".
+     */
+    val dedupeAgainstEarlierRows: Boolean = false,
 )
 
 @Composable
