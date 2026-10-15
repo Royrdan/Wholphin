@@ -787,15 +787,35 @@ class HomeSettingsService
                             true,
                             row.viewOptions.useSeries,
                         )
-                    val nextUp =
+                    // When the layout also carries a "New episodes" row, that row owns every show
+                    // whose next episode aired recently - without this hand-off the same show sits
+                    // in both rows, which is the duplicate users actually see. Work the hand-off out
+                    // from the same wide list that row uses, via the same function, so the two agree
+                    // exactly rather than approximately.
+                    val newEpisodesRowPresent =
+                        currentSettings.value.rows.any { it.config is HomeRowConfig.NewEpisodes }
+                    val nextUpFetched =
                         latestNextUpService.getNextUp(
                             userDto.id,
-                            limit,
+                            if (newEpisodesRowPresent) newEpisodesFetchLimit(limit) else limit,
                             prefs.enableRewatchingNextUp,
                             false,
                             prefs.maxDaysNextUp,
                             row.viewOptions.useSeries,
                         )
+                    val nextUp =
+                        if (newEpisodesRowPresent) {
+                            val ownedByNewEpisodes =
+                                newEpisodesSelection(nextUpFetched, limit)
+                                    .mapNotNull { it.data.seriesId }
+                                    .toSet()
+                            nextUpFetched
+                                .filterNot { item ->
+                                    item.data.seriesId?.let { it in ownedByNewEpisodes } == true
+                                }.take(limit)
+                        } else {
+                            nextUpFetched
+                        }
                     val combined = latestNextUpService.buildCombined(resume, nextUp)
 
                     Success(
@@ -1379,28 +1399,18 @@ class HomeSettingsService
 
                 is HomeRowConfig.NewEpisodes -> {
                     val title = ResStringProvider(R.string.new_episodes)
-                    // "Next up" for the shows you actually follow (the original, correct source) - but
-                    // only keep episodes that actually aired recently (within ~6 months). This stops
-                    // old episodes of long-running shows (e.g. restarting South Park at season 10) from
-                    // showing up as "new". Filter on the EPISODE's air date, not the series', so a
-                    // genuinely new episode of an old show still counts. Fetch extra since the filter
-                    // trims the list.
-                    val cutoff = LocalDateTime.now().minusMonths(6)
                     val items =
-                        latestNextUpService
-                            .getNextUp(
+                        newEpisodesSelection(
+                            latestNextUpService.getNextUp(
                                 userDto.id,
-                                maxOf(limit * 6, 60),
+                                newEpisodesFetchLimit(limit),
                                 prefs.enableRewatchingNextUp,
                                 false,
                                 prefs.maxDaysNextUp,
                                 row.viewOptions.useSeries,
-                            ).filter { item ->
-                                item?.data?.premiereDate?.let { it >= cutoff } ?: false
-                            }
-                            // One episode per show (its next-up episode), then on to the next show.
-                            .distinctBy { it?.data?.seriesId }
-                            .take(limit)
+                            ),
+                            limit,
+                        )
                     Success(
                         title,
                         items,
@@ -1428,6 +1438,36 @@ class HomeSettingsService
                 }
                 },
             )
+
+        /**
+         * The episodes the "New episodes" row shows, worked out from a wide next-up list.
+         *
+         * "Next up" for the shows you actually follow is the right source, but it has to be trimmed
+         * to episodes that genuinely aired recently (within ~6 months) or old episodes of
+         * long-running shows (e.g. restarting South Park at season 10) turn up as "new". The filter
+         * is on the EPISODE's air date, not the series', so a real new episode of an old show still
+         * counts.
+         *
+         * Lives on its own because the combined continue-watching row calls it too, to find out
+         * which shows this row is taking. One function, so the two rows cannot drift apart and
+         * start showing the same show again.
+         */
+        private fun newEpisodesSelection(
+            nextUp: List<BaseItem>,
+            limit: Int,
+        ): List<BaseItem> {
+            val cutoff = LocalDateTime.now().minusMonths(6)
+            return nextUp
+                .filter { item -> item.data.premiereDate?.let { it >= cutoff } ?: false }
+                .distinctBy { it.data.seriesId }
+                .take(limit)
+        }
+
+        /**
+         * How much next up [newEpisodesSelection] needs fetched to fill a row of [limit], given the
+         * air-date filter throws most of it away.
+         */
+        private fun newEpisodesFetchLimit(limit: Int) = maxOf(limit * 6, 60)
 
         /**
          * Client-side safety net: unless the user has opted in to seeing unreleased content, drop

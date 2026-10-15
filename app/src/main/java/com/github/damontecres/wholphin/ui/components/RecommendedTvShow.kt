@@ -6,6 +6,7 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.github.damontecres.wholphin.R
 import com.github.damontecres.wholphin.data.model.HomeRowViewOptions
 import com.github.damontecres.wholphin.preferences.UserPreferences
+import com.github.damontecres.wholphin.services.oneEpisodePerSeriesOrNull
 import com.github.damontecres.wholphin.ui.SlimItemFields
 import com.github.damontecres.wholphin.ui.data.RowColumn
 import com.github.damontecres.wholphin.util.GetItemsRequestHandler
@@ -48,6 +49,10 @@ private fun getRecommendedRows(
                 enableUserData = true,
                 enableRewatching = enableRewatching,
             ),
+        // One card per show - see oneEpisodePerSeries for why Jellyfin returns two.
+        transform = ::oneEpisodePerSeriesOrNull,
+        // ...and do not repeat a show the Continue watching row above is already showing
+        dedupeAgainstEarlierRows = true,
     ),
     RecommendedRow(
         title = R.string.recently_released,

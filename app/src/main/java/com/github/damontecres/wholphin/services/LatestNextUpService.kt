@@ -122,6 +122,7 @@ class LatestNextUpService
                             true
                         }
                     }
+                    .let(::oneEpisodePerSeries)
 
             return nextUp
         }
@@ -138,9 +139,9 @@ class LatestNextUpService
             withContext(WholphinDispatchers.IO) {
                 val start = System.currentTimeMillis()
                 val semaphore = Semaphore(3)
+                val nextUpWithSeries = nextUp.filter { it.data.seriesId != null }
                 val deferred =
-                    nextUp
-                        .filter { it.data.seriesId != null }
+                    nextUpWithSeries
                         .map { item ->
                             async(WholphinDispatchers.IO) {
                                 try {
@@ -156,9 +157,21 @@ class LatestNextUpService
 
                 val nextUpLastPlayed = deferred.awaitAll()
                 val timestamps = mutableMapOf<UUID, LocalDateTime?>()
-                nextUp.map { it.id }.zip(nextUpLastPlayed).toMap(timestamps)
+                nextUpWithSeries.map { it.id }.zip(nextUpLastPlayed).toMap(timestamps)
                 resume.forEach { timestamps[it.id] = it.data.userData?.lastPlayedDate }
-                val result = (resume + nextUp).sortedByDescending { timestamps[it.id] }
+                // One card per show. A half-finished episode always wins over a next-up
+                // suggestion for the same show: that is the episode the user is in the middle of,
+                // and next up offers the one AFTER it, so letting next up win would quietly skip
+                // an episode. (With "rewatch next up" on, Jellyfin also hands back an
+                // already-watched episode, so one show can arrive here three times.)
+                val resumeSeries = resume.mapNotNull { it.data.seriesId }.toSet()
+                val result =
+                    oneEpisodePerSeries(
+                        resume +
+                            nextUp.filterNot { item ->
+                                item.data.seriesId?.let { it in resumeSeries } == true
+                            },
+                    ).sortedByDescending { timestamps[it.id] }
                 val duration = (System.currentTimeMillis() - start).milliseconds
                 Timber.v("buildCombined took %s", duration)
                 return@withContext result
@@ -272,3 +285,51 @@ class LatestNextUpService
 data class RemovedSeriesIds(
     val value: Map<UUID, LocalDateTime>,
 )
+
+/**
+ * Keep one card per show.
+ *
+ * With "rewatch next up" enabled, Jellyfin returns TWO episodes for the same series - the last one
+ * the user watched AND the genuinely next one - and it does not order them helpfully (the already
+ * watched episode usually comes first). On a row of series posters that reads as the same show
+ * listed twice, so collapse each series down to the single episode the user actually wants:
+ * unfinished beats finished, then the later episode wins.
+ *
+ * Items with no series (ie movies) are passed through untouched. Row order is preserved: a series
+ * keeps the position of its first entry.
+ */
+fun oneEpisodePerSeries(items: List<BaseItem>): List<BaseItem> {
+    val bySeries = LinkedHashMap<Any, BaseItem>(items.size)
+    items.forEach { item ->
+        val key: Any = item.data.seriesId ?: item.id
+        val current = bySeries[key]
+        if (current == null || isBetterNextUp(item, current)) {
+            bySeries[key] = item
+        }
+    }
+    return bySeries.values.toList()
+}
+
+/**
+ * Nullable overload for the paged/library rows, which carry not-yet-loaded placeholders
+ */
+fun oneEpisodePerSeriesOrNull(items: List<BaseItem?>): List<BaseItem?> {
+    val (loaded, placeholders) = items.partition { it != null }
+    return oneEpisodePerSeries(loaded.filterNotNull()) + placeholders
+}
+
+private fun isBetterNextUp(
+    candidate: BaseItem,
+    current: BaseItem,
+): Boolean {
+    val candidatePlayed = candidate.data.userData?.played == true
+    val currentPlayed = current.data.userData?.played == true
+    if (candidatePlayed != currentPlayed) {
+        // An episode still to finish always beats one already watched
+        return !candidatePlayed
+    }
+    val candidateSeason = candidate.data.parentIndexNumber ?: 0
+    val currentSeason = current.data.parentIndexNumber ?: 0
+    if (candidateSeason != currentSeason) return candidateSeason > currentSeason
+    return (candidate.data.indexNumber ?: 0) > (current.data.indexNumber ?: 0)
+}
