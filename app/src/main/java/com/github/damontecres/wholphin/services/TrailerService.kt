@@ -75,6 +75,8 @@ class TrailerService
         }
 
         companion object {
+            private const val YOUTUBE_TV_PACKAGE = "com.google.android.youtube.tv"
+
             /**
              * Note: This is explicitly <b>not</b> a member function because the injected Context is not an Activity.
              * We want to start the intent without a new task which requires the Activity context
@@ -97,7 +99,22 @@ class TrailerService
                     }
 
                     is RemoteTrailer -> {
-                        val intent = Intent(Intent.ACTION_VIEW, trailer.url.toUri())
+                        val uri = trailer.url.toUri()
+                        val isYouTube =
+                            uri.host?.let { it == "youtu.be" || it.endsWith("youtube.com") } == true
+                        val intent = Intent(Intent.ACTION_VIEW, uri)
+                        if (isYouTube) {
+                            // Play full screen and close YouTube when the trailer ends,
+                            // dropping straight back onto this Wholphin page.
+                            intent.putExtra("force_fullscreen", true)
+                            intent.putExtra("finish_on_ended", true)
+                            val youTubeTv =
+                                Intent(intent).setPackage(YOUTUBE_TV_PACKAGE)
+                            if (youTubeTv.resolveActivity(context.packageManager) != null) {
+                                context.startActivity(youTubeTv)
+                                return
+                            }
+                        }
                         context.startActivity(intent)
                     }
                 }
