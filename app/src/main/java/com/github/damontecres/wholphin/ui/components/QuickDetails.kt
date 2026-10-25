@@ -23,10 +23,14 @@ import androidx.tv.material3.Icon
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import com.github.damontecres.wholphin.R
+import com.github.damontecres.wholphin.data.model.BaseItem
 import com.github.damontecres.wholphin.data.model.QuickDetailsData
 import com.github.damontecres.wholphin.preferences.DisplayToggle
 import com.github.damontecres.wholphin.ui.dot
+import com.github.damontecres.wholphin.ui.formatDuration
 import com.github.damontecres.wholphin.ui.formatTime
+import com.github.damontecres.wholphin.util.rememberApproxRuntime
+import org.jellyfin.sdk.model.api.BaseItemKind
 import com.github.damontecres.wholphin.ui.util.LocalClock
 import com.github.damontecres.wholphin.ui.util.LocalInterfaceCustomization
 import org.jellyfin.sdk.model.DateTime
@@ -39,6 +43,7 @@ fun QuickDetails(
     modifier: Modifier = Modifier,
     textStyle: TextStyle = MaterialTheme.typography.titleSmall,
     endsAt: DateTime? = null,
+    approxItem: BaseItem? = null,
 ) {
     val enabled = LocalInterfaceCustomization.current.enabledDisplayToggles
     val inlineContentMap = rememberQuickDetailsContentMap(textStyle)
@@ -59,8 +64,41 @@ fun QuickDetails(
             TimeRemaining(timeRemaining, textStyle = textStyle)
         } else if (endsAt != null) {
             EndsAt(endsAt, textStyle = textStyle)
+        } else {
+            // Debrid .strm items have no Jellyfin runtime until played: approximate from TMDB
+            val approx = rememberApproxRuntime(approxItem)
+            if (approx != null) {
+                ApproxRuntime(approx, approxItem?.type == BaseItemKind.SERIES, textStyle)
+            }
         }
     }
+}
+
+@Composable
+private fun ApproxRuntime(
+    runtime: Duration,
+    isSeries: Boolean,
+    textStyle: TextStyle,
+) {
+    val resources = LocalResources.current
+    val context = LocalContext.current
+    val now by LocalClock.current.now
+    val text =
+        remember(runtime, isSeries, if (isSeries) null else now, resources, context) {
+            buildAnnotatedString {
+                dot()
+                val dur = "~" + resources.formatDuration(runtime)
+                if (isSeries) {
+                    append(resources.getString(R.string.approx_episode_runtime, dur))
+                } else {
+                    append(dur)
+                    dot()
+                    val endTimeStr = formatTime(context, now.plusSeconds(runtime.inWholeSeconds))
+                    append(resources.getString(R.string.ends_at, "~$endTimeStr"))
+                }
+            }
+        }
+    Text(text = text, style = textStyle, maxLines = 1)
 }
 
 @NonRestartableComposable

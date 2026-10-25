@@ -40,6 +40,7 @@ fun FocusedEpisodeHeader(
                 it,
                 ep.timeRemainingOrRuntime,
                 Modifier.padding(start = HeaderUtils.startPadding),
+                approxItem = ep,
             )
         }
 

@@ -78,6 +78,8 @@ configure<ApplicationExtension> {
         testInstrumentationRunner = "com.github.damontecres.wholphin.test.WholphinTestRunner"
 
         buildConfigField("long", "BUILD_TIME", System.currentTimeMillis().toString())
+        // TMDB v3 key for the approximate-runtime fallback; injected from the build env, never committed
+        buildConfigField("String", "TMDB_API_KEY", "\"${System.getenv("TMDB_API_KEY") ?: ""}\"")
     }
 
     signingConfigs {

@@ -67,6 +67,7 @@ fun MovieDetailsHeader(
                 movie.ui.quickDetails,
                 movie.timeRemainingOrRuntime,
                 Modifier.padding(start = HeaderUtils.startPadding),
+                approxItem = movie,
             )
 
             dto.genres?.letNotEmpty {
