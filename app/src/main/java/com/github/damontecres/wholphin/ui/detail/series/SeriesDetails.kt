@@ -455,6 +455,19 @@ fun SeriesDetailsContent(
                                     }
                                 },
                         )
+                        ExpandableFaButton(
+                            title = R.string.add_to_list,
+                            iconStringRes = R.string.fa_list_ul,
+                            onClick = { actions.onClickAddPlaylist.invoke(series.id) },
+                            modifier =
+                                Modifier.onFocusChanged {
+                                    if (it.isFocused) {
+                                        scope.launch(ExceptionHandler()) {
+                                            bringIntoViewRequester.bringIntoView()
+                                        }
+                                    }
+                                },
+                        )
                         TrailerButton(
                             trailers = trailers,
                             trailerOnClick = trailerOnClick,
@@ -677,6 +690,7 @@ fun SeriesDetailsHeader(
                 series.ui.quickDetails,
                 null,
                 Modifier.padding(start = HeaderUtils.startPadding),
+                approxItem = series,
             )
             dto.studios?.let {
                 val studios = remember { series.studioNames }

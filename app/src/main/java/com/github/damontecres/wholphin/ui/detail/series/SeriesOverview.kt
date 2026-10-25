@@ -267,6 +267,7 @@ fun SeriesOverview(
                         viewModel.setWatched(it.id, !played, position.episodeRowIndex)
                     }
                 },
+                addToListOnClick = { contextActions.onClickAddPlaylist.invoke(it) },
                 favoriteOnClick = {
                     episodeList?.getOrNull(position.episodeRowIndex)?.let {
                         val favorite = it.data.userData?.isFavorite ?: false

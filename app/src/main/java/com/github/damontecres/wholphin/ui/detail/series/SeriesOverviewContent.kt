@@ -94,6 +94,7 @@ fun SeriesOverviewContent(
     playOnClick: (Duration) -> Unit,
     watchOnClick: () -> Unit,
     favoriteOnClick: () -> Unit,
+    addToListOnClick: ((java.util.UUID) -> Unit)? = null,
     moreOnClick: () -> Unit,
     overviewOnClick: () -> Unit,
     personOnClick: (Person) -> Unit,
@@ -324,6 +325,7 @@ fun SeriesOverviewContent(
                             episodeRowFocusRequester.tryRequestFocus()
                         },
                         favoriteOnClick = favoriteOnClick,
+                        addToListOnClick = addToListOnClick?.let { cb -> { cb(ep.id) } },
                         buttonOnFocusChanged = {
                             if (it.isFocused) {
                                 scope.launch {

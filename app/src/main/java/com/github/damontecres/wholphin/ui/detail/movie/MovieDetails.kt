@@ -198,6 +198,7 @@ fun MovieDetails(
                 favoriteOnClick = {
                     viewModel.setFavorite(movie.id, !movie.favorite)
                 },
+                addToListOnClick = { contextActions.onClickAddPlaylist.invoke(movie.id) },
                 onLongClickPerson = { index, person ->
                     showContextMenu =
                         ContextMenu.ForPerson(
@@ -297,6 +298,7 @@ fun MovieDetailsContent(
     watchOnClick: () -> Unit,
     favoriteOnClick: () -> Unit,
     moreOnClick: () -> Unit,
+    addToListOnClick: (() -> Unit)? = null,
     onClickItem: (Int, BaseItem) -> Unit,
     onClickPerson: (Person) -> Unit,
     onLongClickPerson: (Int, Person) -> Unit,
@@ -356,6 +358,7 @@ fun MovieDetailsContent(
                         moreOnClick = moreOnClick,
                         watchOnClick = watchOnClick,
                         favoriteOnClick = favoriteOnClick,
+                        addToListOnClick = addToListOnClick,
                         buttonOnFocusChanged = {
                             if (it.isFocused) {
                                 position = HEADER_ROW

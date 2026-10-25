@@ -55,7 +55,7 @@ fun EpisodeDetailsHeader(
             modifier = Modifier.fillMaxWidth(.60f),
         ) {
             val padding = 8.dp
-            QuickDetails(ep.ui.quickDetails, ep.timeRemainingOrRuntime)
+            QuickDetails(ep.ui.quickDetails, ep.timeRemainingOrRuntime, approxItem = ep)
 
             VideoStreamDetails(
                 chosenStreams = chosenStreams,

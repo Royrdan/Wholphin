@@ -89,6 +89,7 @@ fun ExpandablePlayButtons(
     chooseVersionParams: ChooseVersionParams?,
     buttonOnFocusChanged: (FocusState) -> Unit,
     modifier: Modifier = Modifier,
+    addToListOnClick: (() -> Unit)? = null,
 ) {
     val resources = LocalResources.current
     val firstFocus = remember { FocusRequester() }
@@ -180,6 +181,18 @@ fun ExpandablePlayButtons(
                 iconColor = if (favorite) Color.Red else Color.Unspecified,
                 modifier = Modifier.onFocusChanged(buttonOnFocusChanged),
             )
+        }
+
+        // Add to list (playlist) button
+        if (addToListOnClick != null) {
+            item("add_to_list") {
+                ExpandableFaButton(
+                    title = R.string.add_to_list,
+                    iconStringRes = R.string.fa_list_ul,
+                    onClick = addToListOnClick,
+                    modifier = Modifier.onFocusChanged(buttonOnFocusChanged),
+                )
+            }
         }
 
         if (trailers != null) {

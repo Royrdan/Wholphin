@@ -168,6 +168,7 @@ fun EpisodeDetails(
                 favoriteOnClick = {
                     viewModel.setFavorite(ep.id, !ep.favorite)
                 },
+                addToListOnClick = { contextActions.onClickAddPlaylist.invoke(ep.id) },
                 canDelete = canDelete,
                 onConfirmDelete = { viewModel.deleteItem(ep) },
                 onChooseVersion = { contextActions.onChooseVersion.invoke(ep, it) },
@@ -225,6 +226,7 @@ fun EpisodeDetailsContent(
     watchOnClick: () -> Unit,
     favoriteOnClick: () -> Unit,
     moreOnClick: () -> Unit,
+    addToListOnClick: (() -> Unit)? = null,
     canDelete: Boolean,
     onConfirmDelete: () -> Unit,
     onChooseVersion: (MediaSourceInfo) -> Unit,
@@ -276,6 +278,7 @@ fun EpisodeDetailsContent(
                         moreOnClick = moreOnClick,
                         watchOnClick = watchOnClick,
                         favoriteOnClick = favoriteOnClick,
+                        addToListOnClick = addToListOnClick,
                         buttonOnFocusChanged = {
                             if (it.isFocused) {
                                 position = HEADER_ROW
