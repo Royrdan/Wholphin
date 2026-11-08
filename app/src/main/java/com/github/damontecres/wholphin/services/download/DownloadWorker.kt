@@ -17,6 +17,7 @@ import dagger.assisted.AssistedInject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -27,7 +28,6 @@ import java.io.File
 import java.io.IOException
 import java.io.RandomAccessFile
 import java.util.concurrent.TimeUnit
-import kotlin.coroutines.coroutineContext
 
 /**
  * Drains the download queue one item at a time: resolve the jf-resolve link to the CDN file,
@@ -75,7 +75,7 @@ class DownloadWorker
             var failed = 0
             try {
                 while (true) {
-                    coroutineContext.ensureActive()
+                    currentCoroutineContext().ensureActive()
                     val next = dao.nextActive() ?: break
                     when (processItem(next)) {
                         ItemOutcome.DONE -> finished++
@@ -244,7 +244,7 @@ class DownloadWorker
                         }
                     }
                     if (!resp.isSuccessful) throw IOException("HTTP ${resp.code} from CDN")
-                    val body = resp.body ?: throw IOException("Empty body from CDN")
+                    val body = resp.body
 
                     val resumed = resp.code == 206 && offset > 0L
                     val total: Long =
@@ -270,7 +270,7 @@ class DownloadWorker
                         val buffer = ByteArray(256 * 1024)
                         body.byteStream().use { input ->
                             while (true) {
-                                coroutineContext.ensureActive()
+                                currentCoroutineContext().ensureActive()
                                 val n = input.read(buffer)
                                 if (n < 0) break
                                 raf.write(buffer, 0, n)

@@ -14,7 +14,6 @@ import com.github.damontecres.wholphin.data.download.PendingPlaystate
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
@@ -165,7 +164,7 @@ class DownloadRepository
             serverId: String?,
             userId: String?,
         ) {
-            scope.launch(NonCancellable) {
+            scope.launch {
                 runCatching {
                     dao.updatePosition(itemId, positionMs.coerceAtLeast(0L), played)
                     dao.upsertPlaystate(
