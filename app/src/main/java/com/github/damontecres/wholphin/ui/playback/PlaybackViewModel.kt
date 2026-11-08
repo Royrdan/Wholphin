@@ -137,6 +137,12 @@ import kotlin.math.roundToInt
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
+import com.github.damontecres.wholphin.services.download.DownloadRepository
+import com.github.damontecres.wholphin.data.download.DownloadedItem
+import org.jellyfin.sdk.model.api.BaseItemDto
+import org.jellyfin.sdk.model.api.MediaSourceType
+import org.jellyfin.sdk.model.api.MediaStreamProtocol
+import java.io.File
 
 /**
  * This [ViewModel] is responsible for playing media including moving through playlists (including next up episodes)
@@ -164,6 +170,7 @@ class PlaybackViewModel
         private val imageUrlService: ImageUrlService,
         private val screensaverService: ScreensaverService,
         private val musicService: MusicService,
+        private val downloadRepository: DownloadRepository,
         @Assisted private val destination: Destination,
     ) : ViewModel(),
         Player.Listener,
@@ -197,6 +204,12 @@ class PlaybackViewModel
         private var positionWatchJob: Job? = null
         private var prewarmJob: Job? = null
         private var prewarmedNext: PrewarmedUrl? = null
+
+        // Offline playback: set while the current item plays from a downloaded file. Server calls
+        // (playback info, segments, progress reports) are skipped and position is kept locally.
+        private var offlineDownload: DownloadedItem? = null
+        private var offlinePositionJob: Job? = null
+        private var offlineOnly: Boolean = false
 
         // Media sources the background probe returned, keyed by item + source id. The probe
         // bypass (see changeStreams) starts playback from the item's STATIC source, which on a
@@ -253,6 +266,7 @@ class PlaybackViewModel
 
         private fun disconnectPlayer() {
             if (this@PlaybackViewModel::player.isInitialized) {
+                flushOfflinePlaystate()
                 player.removeListener(this@PlaybackViewModel)
                 (player as? ExoPlayer)?.removeAnalyticsListener(this@PlaybackViewModel)
 
@@ -360,7 +374,19 @@ class PlaybackViewModel
                     }
                 }
             this.itemId = itemId
-            val queriedItem = api.userLibraryApi.getItem(itemId).content
+            val offlineRow = downloadRepository.getPlayable(itemId)
+            val queriedItem =
+                try {
+                    api.userLibraryApi.getItem(itemId).content
+                } catch (ex: CancellationException) {
+                    throw ex
+                } catch (ex: Exception) {
+                    // No server (phone offline) but we have the file: build the item from the download row.
+                    if (offlineRow == null) throw ex
+                    Timber.w(ex, "Server unreachable; playing %s from the downloaded copy", itemId)
+                    offlineOnly = true
+                    offlineRow.toBaseItemDto()
+                }
             val playlistItem =
                 if (queriedItem.type.playable) {
                     PlaylistItem.Media(BaseItem(queriedItem, false))
@@ -413,7 +439,7 @@ class PlaybackViewModel
 
             val intros =
                 // If not resuming playback & cinema mode is enabled, get potential intros
-                if (positionMs == 0L && preferences.appPreferences.playbackPreferences.cinemaMode) {
+                if (!offlineOnly && positionMs == 0L && preferences.appPreferences.playbackPreferences.cinemaMode) {
                     api.userLibraryApi
                         .getIntros(
                             itemId = playlistItem.id,
@@ -446,7 +472,7 @@ class PlaybackViewModel
                 playNextUp()
             }
 
-            if (!isPlaylist) {
+            if (!isPlaylist && !offlineOnly) {
                 val result = playlistCreator.createFrom(queriedItem)
                 if (result is PlaylistCreationResult.Success && result.playlist.items.isNotEmpty()) {
                     _state.update {
@@ -515,6 +541,13 @@ class PlaybackViewModel
                 this@PlaybackViewModel.currentItem = playlistItem
                 this@PlaybackViewModel.itemId = item.id
                 pendingProbeSubtitleStreams = null
+
+                // Previous item may have been offline: push its position out before moving on.
+                withContext(WholphinDispatchers.Main) { flushOfflinePlaystate() }
+                // Downloaded copy on this device? Play the file; no server round-trips.
+                downloadRepository.getPlayable(item.id)?.let { offline ->
+                    return@withContext playOffline(item, offline, positionMs)
+                }
 
                 val isLiveTv = item.type == BaseItemKind.TV_CHANNEL
                 val base = item.data
@@ -703,6 +736,141 @@ class PlaybackViewModel
                     }
                 }
         }
+
+        // ------------------------------------------------------------------------------------
+        // Offline playback (downloaded files)
+        // ------------------------------------------------------------------------------------
+
+        /**
+         * Play [item] from its downloaded file. Mirrors the tail of [changeStreams] but with a
+         * file:// URI and no Jellyfin playback-info, segment or progress calls.
+         */
+        private suspend fun playOffline(
+            item: BaseItem,
+            download: DownloadedItem,
+            positionMs: Long,
+        ): Boolean {
+            val file = File(download.filePath!!)
+            Timber.i("Playing %s offline from %s (%d bytes)", item.id, file.absolutePath, file.length())
+            createPlayer(isHdr = false, is4k = false)
+            val source = item.data.mediaSources?.firstOrNull() ?: offlineMediaSource(download)
+            val mediaItem =
+                MediaItem
+                    .Builder()
+                    .setMediaId(item.id.toString())
+                    .setMediaMetadata(item.toMediaMetadata(download.imageUrl))
+                    .setUri(android.net.Uri.fromFile(file))
+                    .build()
+            val playback =
+                CurrentPlayback(
+                    item = item,
+                    tracks = listOf(),
+                    backend = currentPlayer.value!!.backend,
+                    playMethod = PlayMethod.DIRECT_PLAY,
+                    playSessionId = null,
+                    liveStreamId = null,
+                    mediaSourceInfo = source,
+                )
+            _state.update { it.copy(currentItemPlayback = null, currentPlayback = null) }
+            updateCurrentMedia {
+                CurrentMediaInfo.EMPTY.copy(sourceId = source.id, chapters = Chapter.fromDto(item.data))
+            }
+            offlineDownload = download
+            val startMs =
+                when {
+                    positionMs > 0L -> positionMs
+                    download.lastPositionMs > 0L && !download.playedToCompletion -> download.lastPositionMs
+                    else -> C.TIME_UNSET
+                }
+            withContext(WholphinDispatchers.Main) {
+                this@PlaybackViewModel.activityListener?.let {
+                    it.release()
+                    player.removeListener(it)
+                }
+                this@PlaybackViewModel.activityListener = null
+                trackChangeListener?.let { player.removeListener(it) }
+                trackChangeListener = null
+                loadStatusTicker?.cancel()
+                _state.update {
+                    it.copy(loading = LoadingState.Success, statusMessage = null, currentPlayback = playback)
+                }
+                player.setMediaItem(mediaItem, startMs)
+                player.prepare()
+                player.play()
+            }
+            startOfflinePositionWatch(download)
+            watchPlaybackPosition()
+            return true
+        }
+
+        /** Every few seconds, remember where we are in the downloaded file. */
+        private fun startOfflinePositionWatch(download: DownloadedItem) {
+            offlinePositionJob?.cancel()
+            offlinePositionJob =
+                viewModelScope.launchDefault {
+                    while (isActive) {
+                        delay(5_000L)
+                        val (positionMs, durationMs, playing) =
+                            withContext(WholphinDispatchers.Main) {
+                                Triple(player.currentPosition, player.duration, player.isPlaying)
+                            }
+                        if (!playing) continue
+                        val played = durationMs > 0L && durationMs != C.TIME_UNSET && positionMs >= durationMs * 0.9
+                        runCatching { downloadRepository.savePosition(download.itemId, positionMs, played) }
+                    }
+                }
+        }
+
+        /**
+         * Final position/watched flag for an offline item goes to the download row and the pending
+         * playstate queue (synced to Jellyfin by PlaystateSyncWorker when a network is back).
+         * Must be called on the main thread (reads the player).
+         */
+        private fun flushOfflinePlaystate() {
+            val download = offlineDownload ?: return
+            offlineDownload = null
+            offlinePositionJob?.cancel()
+            offlinePositionJob = null
+            if (!this@PlaybackViewModel::player.isInitialized) return
+            val (positionMs, durationMs) =
+                runCatching { player.currentPosition to player.duration }.getOrDefault(0L to C.TIME_UNSET)
+            val played = durationMs > 0L && durationMs != C.TIME_UNSET && positionMs >= durationMs * 0.9
+            val user = serverRepository.currentUser
+            Timber.i("offline playstate flush %s pos=%d played=%s", download.itemId, positionMs, played)
+            downloadRepository.queuePlaystateAsync(
+                itemId = download.itemId,
+                positionMs = if (played) 0L else positionMs,
+                played = played,
+                serverId = user?.serverId?.toString(),
+                userId = user?.id?.toString(),
+            )
+        }
+
+        private fun offlineMediaSource(download: DownloadedItem): MediaSourceInfo =
+            MediaSourceInfo(
+                protocol = MediaProtocol.FILE,
+                id = download.itemId.toString(),
+                path = download.filePath,
+                name = download.title,
+                container = download.filePath?.substringAfterLast('.', "mkv"),
+                runTimeTicks = download.runTimeTicks,
+                type = MediaSourceType.DEFAULT,
+                isRemote = false,
+                readAtNativeFramerate = false,
+                ignoreDts = false,
+                ignoreIndex = false,
+                genPtsInput = false,
+                supportsTranscoding = false,
+                supportsDirectStream = false,
+                supportsDirectPlay = true,
+                isInfiniteStream = false,
+                requiresOpening = false,
+                requiresClosing = false,
+                requiresLooping = false,
+                supportsProbing = false,
+                transcodingSubProtocol = MediaStreamProtocol.HTTP,
+                hasSegments = false,
+            )
 
         /**
          * Resolve the jf-resolve resolver path for [itemId] (mirrors source selection) or null if it
@@ -914,6 +1082,13 @@ class PlaybackViewModel
                             )
                         if (wasSuccessful) return@withContext
                     }
+                }
+
+                offlineDownload?.takeIf { it.itemId == item.id }?.let {
+                    // Offline file: nothing to ask the server for (track changes that need a
+                    // restart/transcode are not available without a network).
+                    Timber.w("changeStreams skipped: %s is playing from the downloaded copy", item.id)
+                    return@withContext
                 }
 
                 Timber.i(
@@ -2432,3 +2607,17 @@ private data class PrewarmedUrl(
     val url: String,
     val atMs: Long,
 )
+
+/** Minimal item for playing a download when Jellyfin cannot be reached. */
+private fun DownloadedItem.toBaseItemDto(): BaseItemDto =
+    BaseItemDto(
+        id = itemId,
+        type = if (isEpisode) BaseItemKind.EPISODE else BaseItemKind.MOVIE,
+        name = title,
+        seriesId = seriesId,
+        seriesName = seriesName,
+        seasonId = seasonId,
+        parentIndexNumber = seasonNumber,
+        indexNumber = episodeNumber,
+        runTimeTicks = runTimeTicks,
+    )

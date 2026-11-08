@@ -104,6 +104,8 @@ import timber.log.Timber
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
+import com.github.damontecres.wholphin.ui.phone.PhoneTouchOverlay
+import com.github.damontecres.wholphin.ui.phone.rememberIsPhone
 
 /**
  * The actual playback page which shows media & playback controls
@@ -384,6 +386,17 @@ fun PlaybackPageContent(
                                 .background(AppColors.TransparentBlack25),
                     )
                 }
+            }
+
+            // Phone only: touch controls over the surface. TV never sees this.
+            if (rememberIsPhone()) {
+                PhoneTouchOverlay(
+                    player = player,
+                    title = state.currentPlayback?.item?.name,
+                    subtitle = state.currentPlayback?.item?.data?.seriesName,
+                    onBack = { viewModel.navigationManager.goBack() },
+                    modifier = Modifier.matchParentSize(),
+                )
             }
 
             AnimatedVisibility(

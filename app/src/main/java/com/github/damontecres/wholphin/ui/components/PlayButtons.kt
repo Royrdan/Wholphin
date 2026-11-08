@@ -90,6 +90,7 @@ fun ExpandablePlayButtons(
     buttonOnFocusChanged: (FocusState) -> Unit,
     modifier: Modifier = Modifier,
     addToListOnClick: (() -> Unit)? = null,
+    downloadOnClick: (() -> Unit)? = null,
 ) {
     val resources = LocalResources.current
     val firstFocus = remember { FocusRequester() }
@@ -190,6 +191,18 @@ fun ExpandablePlayButtons(
                     title = R.string.add_to_list,
                     iconStringRes = R.string.fa_list_ul,
                     onClick = addToListOnClick,
+                    modifier = Modifier.onFocusChanged(buttonOnFocusChanged),
+                )
+            }
+        }
+
+        // Offline download button (opens the download picker sheet)
+        if (downloadOnClick != null) {
+            item("download") {
+                ExpandableFaButton(
+                    title = R.string.download_action,
+                    iconStringRes = R.string.fa_download,
+                    onClick = downloadOnClick,
                     modifier = Modifier.onFocusChanged(buttonOnFocusChanged),
                 )
             }

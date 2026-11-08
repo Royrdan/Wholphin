@@ -35,6 +35,9 @@ import timber.log.Timber
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.util.UUID
+import com.github.damontecres.wholphin.data.download.DownloadDao
+import com.github.damontecres.wholphin.data.download.DownloadedItem
+import com.github.damontecres.wholphin.data.download.PendingPlaystate
 
 @Database(
     entities = [
@@ -50,8 +53,10 @@ import java.util.UUID
         SeerrUser::class,
         RememberedTab::class,
         WatchlistItem::class,
+        DownloadedItem::class,
+        PendingPlaystate::class,
     ],
-    version = 36,
+    version = 37,
     exportSchema = true,
     autoMigrations = [
         AutoMigration(3, 4),
@@ -71,6 +76,7 @@ import java.util.UUID
         AutoMigration(33, 34),
         AutoMigration(34, 35),
         AutoMigration(35, 36),
+        AutoMigration(36, 37),
     ],
 )
 @TypeConverters(Converters::class)
@@ -92,6 +98,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun rememberedTabDao(): RememberedTabDao
 
     abstract fun watchlistDao(): WatchlistDao
+
+    abstract fun downloadDao(): DownloadDao
 }
 
 class Converters {

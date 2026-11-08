@@ -33,6 +33,7 @@ fun FocusedEpisodeFooter(
     modifier: Modifier = Modifier,
     buttonOnFocusChanged: (FocusState) -> Unit = {},
     addToListOnClick: (() -> Unit)? = null,
+    downloadOnClick: (() -> Unit)? = null,
 ) {
     val dto = ep.data
     val resumePosition = dto.userData?.playbackPositionTicks?.ticks ?: Duration.ZERO
@@ -52,6 +53,7 @@ fun FocusedEpisodeFooter(
             watchOnClick = watchOnClick,
             favoriteOnClick = favoriteOnClick,
             addToListOnClick = addToListOnClick,
+            downloadOnClick = downloadOnClick,
             buttonOnFocusChanged = buttonOnFocusChanged,
             trailers = null,
             trailerOnClick = {},

@@ -195,9 +195,19 @@ class NavDrawerService
             val builtins =
                 buildList {
                     add(NavDrawerItem.Favorites)
+                    add(NavDrawerItem.Downloads)
                     if (discoverActive) add(NavDrawerItem.Discover)
                 }
-            val allLibraries = getAllUserLibraries(user.id, userDto.tvAccess)
+            // Offline (phone with downloads, no server): still show the built-in entries.
+            val allLibraries =
+                try {
+                    getAllUserLibraries(user.id, userDto.tvAccess)
+                } catch (ex: kotlinx.coroutines.CancellationException) {
+                    throw ex
+                } catch (ex: Exception) {
+                    Timber.w(ex, "Could not load libraries for the nav drawer (offline?)")
+                    emptyList()
+                }
             val libraries =
                 allLibraries
                     .map {

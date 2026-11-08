@@ -54,6 +54,7 @@ import com.github.damontecres.wholphin.ui.slideshow.SlideshowPage
 import org.jellyfin.sdk.model.api.BaseItemKind
 import org.jellyfin.sdk.model.api.CollectionType
 import timber.log.Timber
+import com.github.damontecres.wholphin.ui.phone.DownloadsPage
 
 /**
  * Chose the page for the [Destination]
@@ -348,6 +349,11 @@ fun DestinationContent(
                 preferences = preferences,
                 modifier = modifier,
             )
+        }
+
+        Destination.Downloads -> {
+            LaunchedEffect(Unit) { onClearBackdrop.invoke() }
+            DownloadsPage(modifier = modifier)
         }
 
         Destination.NowPlaying -> {

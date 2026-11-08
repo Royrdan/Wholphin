@@ -127,6 +127,13 @@ class NavDrawerViewModel
                     )
                 }
 
+                NavDrawerItem.Downloads -> {
+                    setIndex(index)
+                    navigationManager.navigateToFromDrawer(
+                        Destination.Downloads,
+                    )
+                }
+
                 NavDrawerItem.More -> {
                     setShowMore(!state.value.moreExpanded)
                 }
@@ -168,6 +175,7 @@ class NavDrawerViewModel
                         when (it) {
                             is ServerNavDrawerItem -> it.destination
                             is NavDrawerItem.Favorites -> Destination.Favorites
+                            is NavDrawerItem.Downloads -> Destination.Downloads
                             is NavDrawerItem.Discover -> Destination.Discover
                             else -> null
                         }
@@ -228,6 +236,13 @@ sealed interface NavDrawerItem {
             get() = "a_favorites"
 
         override fun name(context: Context): String = context.getString(R.string.favorites)
+    }
+
+    object Downloads : NavDrawerItem {
+        override val id: String
+            get() = "a_downloads"
+
+        override fun name(context: Context): String = context.getString(R.string.downloads_title)
     }
 
     object More : NavDrawerItem {
@@ -664,6 +679,10 @@ fun NavigationDrawerScope.NavItem(
             when (library) {
                 NavDrawerItem.Favorites -> {
                     R.string.fa_heart
+                }
+
+                NavDrawerItem.Downloads -> {
+                    R.string.fa_download
                 }
 
                 NavDrawerItem.More -> {

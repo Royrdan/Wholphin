@@ -42,6 +42,8 @@ import org.jellyfin.sdk.model.serializer.UUIDSerializer
 import org.jellyfin.sdk.model.serializer.toUUID
 import java.util.UUID
 import kotlin.time.Duration
+import com.github.damontecres.wholphin.ui.phone.DownloadPickerSheet
+import com.github.damontecres.wholphin.ui.phone.DownloadTarget
 
 @Serializable
 data class SeasonEpisode(
@@ -99,6 +101,7 @@ fun SeriesOverview(
 
     var overviewDialog by remember { mutableStateOf<ItemDetailsDialogInfo?>(null) }
     var showContextMenu by remember { mutableStateOf<ContextMenu?>(null) }
+    var downloadTarget by remember { mutableStateOf<DownloadTarget?>(null) }
     var showPlaylistDialog by remember { mutableStateOf<UUID?>(null) }
     val playlistState by playlistViewModel.playlistState.collectAsState()
 
@@ -268,6 +271,7 @@ fun SeriesOverview(
                     }
                 },
                 addToListOnClick = { contextActions.onClickAddPlaylist.invoke(it) },
+                downloadOnClick = { ep -> downloadTarget = DownloadTarget.Episode(ep) },
                 favoriteOnClick = {
                     episodeList?.getOrNull(position.episodeRowIndex)?.let {
                         val favorite = it.data.userData?.isFavorite ?: false
@@ -315,6 +319,9 @@ fun SeriesOverview(
                 modifier = modifier,
             )
         }
+    }
+    downloadTarget?.let { target ->
+        DownloadPickerSheet(target = target, onDismiss = { downloadTarget = null })
     }
     showContextMenu?.let { contextMenu ->
         ContextMenuDialog(

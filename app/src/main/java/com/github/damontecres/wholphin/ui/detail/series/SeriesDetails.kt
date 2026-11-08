@@ -91,6 +91,8 @@ import org.jellyfin.sdk.model.api.BaseItemKind
 import org.jellyfin.sdk.model.serializer.toUUID
 import java.util.UUID
 import kotlin.time.Duration
+import com.github.damontecres.wholphin.ui.phone.DownloadPickerSheet
+import com.github.damontecres.wholphin.ui.phone.DownloadTarget
 
 @Composable
 fun SeriesDetails(
@@ -112,6 +114,7 @@ fun SeriesDetails(
 
     var overviewDialog by remember { mutableStateOf<ItemDetailsDialogInfo?>(null) }
     var showContextMenu by remember { mutableStateOf<ContextMenu?>(null) }
+    var downloadTarget by remember { mutableStateOf<DownloadTarget?>(null) }
 
     var showWatchConfirmation by remember { mutableStateOf(false) }
     var showPlaylistDialog by remember { mutableStateOf<Optional<UUID>>(Optional.absent()) }
@@ -186,6 +189,7 @@ fun SeriesDetails(
             SeriesDetailsContent(
                 preferences = preferences,
                 series = series,
+                downloadOnClick = { downloadTarget = DownloadTarget.Series(series.id, series.name) },
                 seasons = state.seasons,
                 trailers = state.trailers,
                 extras = state.extras,
@@ -277,6 +281,9 @@ fun SeriesDetails(
             }
         }
     }
+    downloadTarget?.let { target ->
+        DownloadPickerSheet(target = target, onDismiss = { downloadTarget = null })
+    }
     showContextMenu?.let { contextMenu ->
         ContextMenuDialog(
             onDismissRequest = { showContextMenu = null },
@@ -348,6 +355,7 @@ fun SeriesDetailsContent(
     discoverSeries: DiscoverItem?,
     onClickDiscoverSeries: () -> Unit,
     modifier: Modifier = Modifier,
+    downloadOnClick: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -468,6 +476,21 @@ fun SeriesDetailsContent(
                                     }
                                 },
                         )
+                        if (downloadOnClick != null) {
+                            ExpandableFaButton(
+                                title = R.string.download_action,
+                                iconStringRes = R.string.fa_download,
+                                onClick = downloadOnClick,
+                                modifier =
+                                    Modifier.onFocusChanged {
+                                        if (it.isFocused) {
+                                            scope.launch(ExceptionHandler()) {
+                                                bringIntoViewRequester.bringIntoView()
+                                            }
+                                        }
+                                    },
+                            )
+                        }
                         TrailerButton(
                             trailers = trailers,
                             trailerOnClick = trailerOnClick,

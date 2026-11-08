@@ -53,6 +53,8 @@ import org.jellyfin.sdk.model.extensions.ticks
 import org.jellyfin.sdk.model.serializer.toUUID
 import java.util.UUID
 import kotlin.time.Duration
+import com.github.damontecres.wholphin.ui.phone.DownloadPickerSheet
+import com.github.damontecres.wholphin.ui.phone.DownloadTarget
 
 @Composable
 fun EpisodeDetails(
@@ -73,6 +75,7 @@ fun EpisodeDetails(
 
     var overviewDialog by remember { mutableStateOf<ItemDetailsDialogInfo?>(null) }
     var showContextMenu by remember { mutableStateOf<ContextMenu?>(null) }
+    var downloadTarget by remember { mutableStateOf<DownloadTarget?>(null) }
     var showPlaylistDialog by remember { mutableStateOf<Optional<UUID>>(Optional.absent()) }
     val playlistState by playlistViewModel.playlistState.collectAsState()
     val canDelete by viewModel.canDelete.collectAsState()
@@ -169,6 +172,7 @@ fun EpisodeDetails(
                     viewModel.setFavorite(ep.id, !ep.favorite)
                 },
                 addToListOnClick = { contextActions.onClickAddPlaylist.invoke(ep.id) },
+                downloadOnClick = { downloadTarget = DownloadTarget.Episode(ep) },
                 canDelete = canDelete,
                 onConfirmDelete = { viewModel.deleteItem(ep) },
                 onChooseVersion = { contextActions.onChooseVersion.invoke(ep, it) },
@@ -185,6 +189,9 @@ fun EpisodeDetails(
                     ?.isAdministrator == true,
             onDismissRequest = { overviewDialog = null },
         )
+    }
+    downloadTarget?.let { target ->
+        DownloadPickerSheet(target = target, onDismiss = { downloadTarget = null })
     }
     showContextMenu?.let { contextMenu ->
         ContextMenuDialog(
@@ -227,6 +234,7 @@ fun EpisodeDetailsContent(
     favoriteOnClick: () -> Unit,
     moreOnClick: () -> Unit,
     addToListOnClick: (() -> Unit)? = null,
+    downloadOnClick: (() -> Unit)? = null,
     canDelete: Boolean,
     onConfirmDelete: () -> Unit,
     onChooseVersion: (MediaSourceInfo) -> Unit,
@@ -279,6 +287,7 @@ fun EpisodeDetailsContent(
                         watchOnClick = watchOnClick,
                         favoriteOnClick = favoriteOnClick,
                         addToListOnClick = addToListOnClick,
+                        downloadOnClick = downloadOnClick,
                         buttonOnFocusChanged = {
                             if (it.isFocused) {
                                 position = HEADER_ROW

@@ -95,6 +95,7 @@ fun SeriesOverviewContent(
     watchOnClick: () -> Unit,
     favoriteOnClick: () -> Unit,
     addToListOnClick: ((java.util.UUID) -> Unit)? = null,
+    downloadOnClick: ((BaseItem) -> Unit)? = null,
     moreOnClick: () -> Unit,
     overviewOnClick: () -> Unit,
     personOnClick: (Person) -> Unit,
@@ -326,6 +327,7 @@ fun SeriesOverviewContent(
                         },
                         favoriteOnClick = favoriteOnClick,
                         addToListOnClick = addToListOnClick?.let { cb -> { cb(ep.id) } },
+                        downloadOnClick = downloadOnClick?.let { cb -> { cb(ep) } },
                         buttonOnFocusChanged = {
                             if (it.isFocused) {
                                 scope.launch {
