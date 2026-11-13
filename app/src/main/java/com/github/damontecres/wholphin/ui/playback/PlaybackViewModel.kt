@@ -139,6 +139,7 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import com.github.damontecres.wholphin.services.download.DownloadRepository
 import com.github.damontecres.wholphin.data.download.DownloadedItem
+import com.github.damontecres.wholphin.data.download.toBaseItemDto
 import org.jellyfin.sdk.model.api.BaseItemDto
 import org.jellyfin.sdk.model.api.MediaSourceType
 import org.jellyfin.sdk.model.api.MediaStreamProtocol
@@ -376,7 +377,11 @@ class PlaybackViewModel
             this.itemId = itemId
             val offlineRow = downloadRepository.getPlayable(itemId)
             val queriedItem =
-                try {
+                if (offlineRow != null && !downloadRepository.isOnline()) {
+                    Timber.i("No network; playing %s from the downloaded copy without asking the server", itemId)
+                    offlineOnly = true
+                    offlineRow.toBaseItemDto()
+                } else try {
                     api.userLibraryApi.getItem(itemId).content
                 } catch (ex: CancellationException) {
                     throw ex
@@ -472,7 +477,11 @@ class PlaybackViewModel
                 playNextUp()
             }
 
-            if (!isPlaylist && !offlineOnly) {
+            if (!isPlaylist && offlineDownload != null) {
+                // Played from a download: the queue is the other downloaded episodes of this show in
+                // (season, episode) order, so "next up" auto-advances across gaps and stops at the end.
+                buildOfflinePlaylist(offlineDownload!!)
+            } else if (!isPlaylist && !offlineOnly) {
                 val result = playlistCreator.createFrom(queriedItem)
                 if (result is PlaylistCreationResult.Success && result.playlist.items.isNotEmpty()) {
                     _state.update {
@@ -822,9 +831,47 @@ class PlaybackViewModel
         }
 
         /**
-         * Final position/watched flag for an offline item goes to the download row and the pending
-         * playstate queue (synced to Jellyfin by PlaystateSyncWorker when a network is back).
-         * Must be called on the main thread (reads the player).
+         * Queue of downloaded episodes of the same show as [current], in (season, episode) order,
+         * positioned at [current]. Movies get a one-item queue.
+         */
+        private suspend fun buildOfflinePlaylist(current: DownloadedItem) {
+            val seriesId = current.seriesId ?: return
+            val rows = downloadRepository.playableEpisodesOf(seriesId)
+            val index = rows.indexOfFirst { it.itemId == current.itemId }
+            if (rows.size <= 1 || index < 0) return
+            val items = rows.map { PlaylistItem.Media(BaseItem(it.toBaseItemDto(), false, it.displayImage)) }
+            Timber.i("offline queue: %d downloaded episodes of %s, starting at %d", items.size, current.seriesName, index)
+            _state.update { it.copy(playlist = Playlist(items), playlistIndex = index) }
+        }
+
+        /**
+         * Record position / watched for an offline item on the download row and the pending playstate
+         * queue (pushed to Jellyfin by PlaystateSyncWorker when a network is back). Called on pause,
+         * stop, item change and completion. Watched = at or past 90% (same threshold as the rest of
+         * the app) or [forcePlayed].
+         */
+        private fun queueOfflinePlaystate(
+            download: DownloadedItem,
+            positionMs: Long,
+            durationMs: Long,
+            forcePlayed: Boolean = false,
+            why: String,
+        ) {
+            val played = forcePlayed || (durationMs > 0L && durationMs != C.TIME_UNSET && positionMs >= durationMs * OFFLINE_WATCHED_FRACTION)
+            val user = serverRepository.currentUser
+            Timber.i("offline playstate (%s) %s pos=%d/%d played=%s", why, download.itemId, positionMs, durationMs, played)
+            downloadRepository.queuePlaystateAsync(
+                itemId = download.itemId,
+                positionMs = if (played) 0L else positionMs,
+                played = played,
+                serverId = user?.serverId?.toString(),
+                userId = user?.id?.toString(),
+            )
+        }
+
+        /**
+         * Final position/watched flag for an offline item. Must be called on the main thread (reads
+         * the player).
          */
         private fun flushOfflinePlaystate() {
             val download = offlineDownload ?: return
@@ -834,16 +881,7 @@ class PlaybackViewModel
             if (!this@PlaybackViewModel::player.isInitialized) return
             val (positionMs, durationMs) =
                 runCatching { player.currentPosition to player.duration }.getOrDefault(0L to C.TIME_UNSET)
-            val played = durationMs > 0L && durationMs != C.TIME_UNSET && positionMs >= durationMs * 0.9
-            val user = serverRepository.currentUser
-            Timber.i("offline playstate flush %s pos=%d played=%s", download.itemId, positionMs, played)
-            downloadRepository.queuePlaystateAsync(
-                itemId = download.itemId,
-                positionMs = if (played) 0L else positionMs,
-                played = played,
-                serverId = user?.serverId?.toString(),
-                userId = user?.id?.toString(),
-            )
+            queueOfflinePlaystate(download, positionMs, durationMs, why = "stop")
         }
 
         private fun offlineMediaSource(download: DownloadedItem): MediaSourceInfo =
@@ -1689,6 +1727,10 @@ class PlaybackViewModel
         override fun onPlaybackStateChanged(playbackState: Int) {
             if (playbackState == Player.STATE_ENDED) {
                 Timber.v("Playback state is STATE_ENDED")
+                offlineDownload?.let { download ->
+                    // Finished a download: watched, regardless of the exact duration the player reports.
+                    runCatching { queueOfflinePlaystate(download, player.duration, player.duration, forcePlayed = true, why = "ended") }
+                }
                 if (playlistJob?.isActive == true) {
                     // A play()/advance is mid-flight: this ENDED belongs to the item we
                     // are leaving, and state.nextItem() already points one episode too
@@ -2511,6 +2553,13 @@ class PlaybackViewModel
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             screensaverService.keepScreenOn(isPlaying)
+            if (!isPlaying) {
+                // Paused (or buffering/ended) while playing a download: remember where we are now so a
+                // reconnect pushes the real position even if the app is killed before stop.
+                offlineDownload?.let { download ->
+                    runCatching { queueOfflinePlaystate(download, player.currentPosition, player.duration, why = "pause") }
+                }
+            }
         }
 
         override fun onAvailableCommandsChanged(availableCommands: Player.Commands) {
@@ -2593,6 +2642,7 @@ private const val PREWARM_TTL_MS = 45 * 60 * 1000L // debrid links live ~60 min;
 // Live resolve-status polling (see ResolveProgressClient).
 private const val PROGRESS_POLL_INTERVAL_MS = 700L
 private const val PROGRESS_PATH_LOOKUP_TIMEOUT_MS = 6_000L
+private const val OFFLINE_WATCHED_FRACTION = 0.9 // matches WATCHED_PERCENT = 90 used elsewhere
 private const val PROGRESS_STALE_PHASE_MS = 6_000L // a phase this old gets a running count appended
 private const val PROGRESS_UNSUPPORTED_STRIKES = 4 // consecutive dead polls before giving up on live status
 
@@ -2608,16 +2658,3 @@ private data class PrewarmedUrl(
     val atMs: Long,
 )
 
-/** Minimal item for playing a download when Jellyfin cannot be reached. */
-private fun DownloadedItem.toBaseItemDto(): BaseItemDto =
-    BaseItemDto(
-        id = itemId,
-        type = if (isEpisode) BaseItemKind.EPISODE else BaseItemKind.MOVIE,
-        name = title,
-        seriesId = seriesId,
-        seriesName = seriesName,
-        seasonId = seasonId,
-        parentIndexNumber = seasonNumber,
-        indexNumber = episodeNumber,
-        runTimeTicks = runTimeTicks,
-    )

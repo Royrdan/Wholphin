@@ -175,6 +175,25 @@ class ServerRepository
             return null
         }
 
+        /**
+         * Restore the saved server + user WITHOUT talking to the server (phone offline). The API
+         * client gets the saved URL/token so a later sync works as soon as the network is back; the
+         * user DTO stays null. Only used to open the Downloads library when the server is unreachable.
+         */
+        suspend fun restoreSessionOffline(
+            serverId: UUID?,
+            userId: UUID?,
+        ): CurrentUser? {
+            if (serverId == null || userId == null) return null
+            val serverAndUsers = withContext(ioDispatcher) { serverDao.getServer(serverId) } ?: return null
+            val user = serverAndUsers.users.firstOrNull { it.id == userId } ?: return null
+            apiClient.update(baseUrl = serverAndUsers.server.url, accessToken = user.accessToken)
+            val currentUser = CurrentUser(serverAndUsers.server, user)
+            withContext(WholphinDispatchers.Main) { _current.value = currentUser }
+            Timber.i("Restored session offline for %s @ %s", user.name, serverAndUsers.server.url)
+            return currentUser
+        }
+
         suspend fun fetchLastUsedServer(serverId: UUID?): JellyfinServer? =
             withContext(ioDispatcher) {
                 serverId?.let { serverDao.getServer(serverId)?.server }

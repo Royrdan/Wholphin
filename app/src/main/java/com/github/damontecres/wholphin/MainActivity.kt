@@ -44,6 +44,7 @@ import com.github.damontecres.wholphin.services.DeviceProfileService
 import com.github.damontecres.wholphin.services.ImageUrlService
 import com.github.damontecres.wholphin.services.IntentResult
 import com.github.damontecres.wholphin.services.IntentService
+import com.github.damontecres.wholphin.services.download.DownloadRepository
 import com.github.damontecres.wholphin.services.LatestNextUpSchedulerService
 import com.github.damontecres.wholphin.services.NavigationManager
 import com.github.damontecres.wholphin.services.PlaybackLifecycleObserver
@@ -171,6 +172,9 @@ class MainActivity : AppCompatActivity() {
 
     @Inject
     lateinit var intentService: IntentService
+
+    @Inject
+    lateinit var downloadRepository: DownloadRepository
 
     private var signInAuto = true
     private var playerBackend: PlayerBackend? = null
@@ -381,6 +385,8 @@ class MainActivity : AppCompatActivity() {
     override fun onStart() {
         super.onStart()
         Timber.d("onStart")
+        // Back in the foreground: push any offline watched-state changes and pull the server's.
+        downloadRepository.scheduleSync("app foreground")
 
         lifecycleScope.launchDefault {
             val appPreferences = userPreferencesDataStore.data.first()
@@ -474,6 +480,7 @@ class MainActivityViewModel
         private val backdropService: BackdropService,
         private val appUpgradeHandler: AppUpgradeHandler,
         private val intentService: IntentService,
+        private val downloadRepository: DownloadRepository,
     ) : ViewModel() {
         private val mutex = Mutex()
 
@@ -573,12 +580,30 @@ class MainActivityViewModel
                         // full setup route even with "sign in automatically" off, which is exactly
                         // the prompt being skipped here.
                         if ((prefs.signInAutomatically || withinGrace) && !profileProtected) {
+                            val serverId = prefs.currentServerId?.toUUIDOrNull()
+                            val userId = prefs.currentUserId?.toUUIDOrNull()
+                            var offlineFallback = false
                             val current =
-                                serverRepository.restoreSession(
-                                    prefs.currentServerId?.toUUIDOrNull(),
-                                    prefs.currentUserId?.toUUIDOrNull(),
-                                )
-                            if (current != null) {
+                                try {
+                                    serverRepository.restoreSession(serverId, userId)
+                                } catch (ex: Exception) {
+                                    // Server unreachable (no network / away from home). With downloads on
+                                    // the phone, open the app on the Downloads library using the saved
+                                    // server + token instead of dropping to the server list.
+                                    if (downloadRepository.hasDownloads()) {
+                                        Timber.w(ex, "restoreSession failed; opening Downloads offline")
+                                        offlineFallback = true
+                                        serverRepository.restoreSessionOffline(serverId, userId)
+                                    } else {
+                                        throw ex
+                                    }
+                                }
+                            if (current != null && offlineFallback) {
+                                navigationManager.replace(Destination.Downloads)
+                                showToast(context, "Server unreachable - showing your downloads")
+                                setupNavigationManager.navigateTo(SetupDestination.AppContent(current))
+                            } else if (current != null) {
+                                downloadRepository.scheduleSync("session restored")
                                 if (current.user.isProtected && !withinGrace) {
                                     setupNavigationManager.navigateTo(
                                         SetupDestination.UserList(
