@@ -37,6 +37,7 @@ import java.time.format.DateTimeFormatter
 import java.util.UUID
 import com.github.damontecres.wholphin.data.download.DownloadDao
 import com.github.damontecres.wholphin.data.download.DownloadedItem
+import com.github.damontecres.wholphin.data.download.DownloadedSeries
 import com.github.damontecres.wholphin.data.download.PendingPlaystate
 
 @Database(
@@ -55,8 +56,9 @@ import com.github.damontecres.wholphin.data.download.PendingPlaystate
         WatchlistItem::class,
         DownloadedItem::class,
         PendingPlaystate::class,
+        DownloadedSeries::class,
     ],
-    version = 37,
+    version = 38,
     exportSchema = true,
     autoMigrations = [
         AutoMigration(3, 4),
@@ -77,6 +79,7 @@ import com.github.damontecres.wholphin.data.download.PendingPlaystate
         AutoMigration(34, 35),
         AutoMigration(35, 36),
         AutoMigration(36, 37),
+        AutoMigration(37, 38),
     ],
 )
 @TypeConverters(Converters::class)

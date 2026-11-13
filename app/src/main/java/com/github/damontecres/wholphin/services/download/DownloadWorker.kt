@@ -175,6 +175,8 @@ class DownloadWorker
                                 ) ?: return ItemOutcome.SKIPPED,
                             )
                             Timber.i("DONE %s -> %s (%d bytes)", row.itemId, file.absolutePath, total)
+                            // Artwork for the offline library while we still have a network.
+                            dao.get(row.itemId)?.let { done -> runCatching { repository.ensureArtwork(done) } }
                             return ItemOutcome.DONE
                         }
 

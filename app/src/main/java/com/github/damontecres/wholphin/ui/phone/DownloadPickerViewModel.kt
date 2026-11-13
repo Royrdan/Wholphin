@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.github.damontecres.wholphin.data.ServerRepository
 import com.github.damontecres.wholphin.data.download.DownloadState
 import com.github.damontecres.wholphin.data.download.DownloadedItem
+import com.github.damontecres.wholphin.data.download.DownloadedSeries
 import com.github.damontecres.wholphin.data.model.BaseItem
 import com.github.damontecres.wholphin.services.ImageUrlService
 import com.github.damontecres.wholphin.services.StreamChoiceService
@@ -409,6 +410,27 @@ class DownloadPickerViewModel
                 }
         }
 
+        /** Show row for the Downloads library (name, year, overview, poster + backdrop URLs). */
+        private suspend fun buildSeriesRow(rows: List<DownloadedItem>): DownloadedSeries? {
+            val seriesId = rows.firstOrNull { it.seriesId != null }?.seriesId ?: return null
+            val fallbackName = rows.firstNotNullOfOrNull { it.seriesName } ?: ""
+            val dto = runCatching { api.userLibraryApi.getItem(seriesId).content }.getOrNull()
+            val item = dto?.let { BaseItem(it) }
+            return DownloadedSeries(
+                seriesId = seriesId,
+                serverId = serverRepository.currentServer?.id?.toString(),
+                name = dto?.name ?: fallbackName,
+                year = dto?.productionYear,
+                overview = dto?.overview,
+                posterUrl =
+                    item?.let { runCatching { imageUrlService.getItemImageUrl(it, ImageType.PRIMARY, fillWidth = 600) }.getOrNull() }
+                        ?: imageUrlService.getItemImageUrl(seriesId, ImageType.PRIMARY, maxWidth = 600),
+                backdropUrl =
+                    item?.let { runCatching { imageUrlService.getItemImageUrl(it, ImageType.BACKDROP, fillWidth = 1280) }.getOrNull() }
+                        ?: imageUrlService.getItemImageUrl(seriesId, ImageType.BACKDROP, maxWidth = 1280),
+            )
+        }
+
         /** Queue everything currently selected. Returns the number of new rows. */
         fun enqueue(onDone: (Int) -> Unit) {
             val st = _state.value
@@ -431,19 +453,26 @@ class DownloadPickerViewModel
                                 title = dto.name ?: "Untitled",
                                 imageUrl =
                                     runCatching {
+                                        // Episode thumbnail (not the series poster): the show art lives on DownloadedSeries.
                                         imageUrlService.getItemImageUrl(
                                             ep.item,
                                             ImageType.PRIMARY,
-                                            useSeriesForPrimary = dto.type == BaseItemKind.EPISODE,
+                                            fillWidth = 480,
+                                            useSeriesForPrimary = false,
                                         )
                                     }.getOrNull(),
+                                overview = dto.overview,
+                                premiereYear = dto.productionYear ?: dto.premiereDate?.year,
                                 resolverUrl = DownloadResolver.withQuality(ep.resolverPath!!, st.quality),
                                 qualityTier = st.quality.param,
                                 createdAt = now + index, // keep queue order
                                 runTimeTicks = dto.runTimeTicks ?: ep.runtime?.let { it.inWholeMilliseconds * 10_000 },
                             )
                         }
-                val count = runCatching { downloadRepository.enqueue(rows) }.getOrElse { Timber.e(it, "enqueue failed"); 0 }
+                val seriesRow = runCatching { buildSeriesRow(rows) }.onFailure { Timber.w(it, "series row failed") }.getOrNull()
+                val count = runCatching { downloadRepository.enqueue(rows, seriesRow) }.getOrElse { Timber.e(it, "enqueue failed"); 0 }
+                // Poster/backdrop for the Downloads library: fetch now while we are online.
+                if (count > 0) runCatching { downloadRepository.ensureAllArtwork() }
                 _state.update { it.copy(enqueuedCount = count) }
                 // Toasts must be shown on the main thread; the enqueue above ran on IO.
                 withContext(Dispatchers.Main) { onDone(count) }
