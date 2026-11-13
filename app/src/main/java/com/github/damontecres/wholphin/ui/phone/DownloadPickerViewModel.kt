@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.jellyfin.sdk.api.client.ApiClient
 import org.jellyfin.sdk.api.client.extensions.tvShowsApi
 import org.jellyfin.sdk.api.client.extensions.userLibraryApi
@@ -444,7 +445,8 @@ class DownloadPickerViewModel
                         }
                 val count = runCatching { downloadRepository.enqueue(rows) }.getOrElse { Timber.e(it, "enqueue failed"); 0 }
                 _state.update { it.copy(enqueuedCount = count) }
-                onDone(count)
+                // Toasts must be shown on the main thread; the enqueue above ran on IO.
+                withContext(Dispatchers.Main) { onDone(count) }
             }
         }
     }
