@@ -77,6 +77,7 @@ fun DownloadsPage(
         Column(
             modifier =
                 modifier
+                    .nativeTouch()
                     .fillMaxSize()
                     .background(MaterialTheme.colorScheme.background)
                     .padding(horizontal = 20.dp),

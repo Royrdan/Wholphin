@@ -90,7 +90,7 @@ fun PhoneTouchOverlay(
 
     Box(
         modifier =
-            modifier.pointerInput(Unit) {
+            modifier.nativeTouch().pointerInput(Unit) {
                 detectTapGestures(
                     onTap = {
                         if (visible) visible = false else poke()

@@ -66,6 +66,7 @@ fun DownloadPickerSheet(
             Column(
                 modifier =
                     Modifier
+                        .nativeTouch()
                         .fillMaxWidth()
                         .padding(horizontal = 20.dp)
                         .navigationBarsPadding()

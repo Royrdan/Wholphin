@@ -22,6 +22,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import com.github.damontecres.wholphin.ui.phone.phoneTouchShim
 import androidx.compose.ui.graphics.Color
 import androidx.datastore.core.DataStore
 import androidx.lifecycle.ViewModel
@@ -256,7 +257,7 @@ class MainActivity : AppCompatActivity() {
         viewModel.appStart(intent)
         setContent {
             MaterialTheme(colorScheme = PurpleThemeColors.darkScheme) {
-                Surface(Modifier.fillMaxSize()) {
+                Surface(Modifier.fillMaxSize().phoneTouchShim()) {
                     val userPreferences by userPreferencesService.flow.collectAsState(null)
                     if (userPreferences == null) {
                         // Show loading page if it is taking a while to get app preferences
