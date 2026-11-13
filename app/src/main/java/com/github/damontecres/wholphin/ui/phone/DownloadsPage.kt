@@ -8,6 +8,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -16,7 +17,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -54,106 +54,142 @@ private sealed interface DeleteRequest {
         val item: DownloadedItem,
     ) : DeleteRequest
 
-    data class Group(
-        val group: DownloadGroup,
+    data class Show(
+        val show: DownloadedShow,
     ) : DeleteRequest
 
     data object All : DeleteRequest
 }
 
 /**
- * Offline downloads, grouped by show. Works by touch and by D-pad (every row and button is a
- * focusable clickable).
+ * Downloads home: an "In progress" section (queued / downloading / paused / failed, hidden when
+ * empty) followed by a poster grid of shows and movies that have at least one finished download.
+ * Shows open [DownloadedSeriesPage]; movies play straight away. Works by touch and by D-pad.
+ * Needs no server: everything comes from the downloads database and local artwork.
  */
 @Composable
 fun DownloadsPage(
     modifier: Modifier = Modifier,
     viewModel: DownloadsViewModel = hiltViewModel(),
 ) {
-    val groups by viewModel.groups.collectAsState()
+    val state by viewModel.state.collectAsState()
     var deleteRequest by remember { mutableStateOf<DeleteRequest?>(null) }
 
     MaterialTheme(colorScheme = PhoneColorScheme) {
-        Column(
+        BoxWithConstraints(
             modifier =
                 modifier
                     .nativeTouch()
                     .fillMaxSize()
-                    .background(MaterialTheme.colorScheme.background)
-                    .padding(horizontal = 20.dp),
+                    .background(MaterialTheme.colorScheme.background),
         ) {
-            // ---- top bar ----
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 8.dp),
-            ) {
-                Text(
-                    "Downloads",
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.weight(1f),
-                )
-                val anyActive = groups.any { g -> g.items.any { it.state.isActive } }
-                val anyPaused = groups.any { g -> g.items.any { it.state == DownloadState.PAUSED || it.state == DownloadState.FAILED } }
-                if (anyActive) {
-                    ActionChip("Pause all", R.string.fa_pause) { viewModel.pauseAll() }
-                }
-                if (anyPaused) {
-                    ActionChip("Resume all", R.string.fa_play) { viewModel.resumeAll() }
-                }
-                if (groups.isNotEmpty()) {
-                    ActionChip("Delete all", R.string.fa_xmark, danger = true) { deleteRequest = DeleteRequest.All }
-                }
-            }
-            Text(
-                "Wi‑Fi only · kept until you delete them",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(bottom = 12.dp),
-            )
-
-            if (groups.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(
-                        "No downloads yet.\nOpen a show or movie and tap Download.",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                return@Column
-            }
+            val horizontalPadding = 20.dp
+            val tileSpacing = 12.dp
+            val minTile = 120.dp
+            val columns = ((maxWidth - horizontalPadding * 2 + tileSpacing) / (minTile + tileSpacing)).toInt().coerceIn(2, 8)
 
             LazyColumn(
                 verticalArrangement = Arrangement.spacedBy(6.dp),
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxSize().padding(horizontal = horizontalPadding),
             ) {
-                groups.forEach { group ->
-                    item(key = "group-${group.key}") {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 4.dp),
-                        ) {
-                            Column(Modifier.weight(1f)) {
-                                Text(group.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                                Text(
-                                    "${group.items.size} item${if (group.items.size == 1) "" else "s"} · ${group.doneCount} done · ${formatBytes(group.totalBytes)}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            ActionChip("Delete", R.string.fa_xmark, danger = true) { deleteRequest = DeleteRequest.Group(group) }
+                item(key = "topbar") {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 4.dp),
+                    ) {
+                        Text(
+                            "Downloads",
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (state.anyActive) ActionChip("Pause all", R.string.fa_pause) { viewModel.pauseAll() }
+                        if (state.anyPaused) ActionChip("Resume all", R.string.fa_play) { viewModel.resumeAll() }
+                        if (!state.isEmpty) ActionChip("Delete all", R.string.fa_xmark, danger = true) { deleteRequest = DeleteRequest.All }
+                    }
+                    Text(
+                        "Wi‑Fi only · kept until you delete them · watched state syncs when back online",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 8.dp),
+                    )
+                }
+
+                if (state.loaded && state.isEmpty) {
+                    item(key = "empty") {
+                        Box(Modifier.fillMaxWidth().padding(top = 80.dp), contentAlignment = Alignment.Center) {
+                            Text(
+                                "No downloads yet.\nOpen a show or movie and tap Download.",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
                     }
-                    items(group.items, key = { it.itemId.toString() }) { item ->
+                }
+
+                // ---- in progress ----
+                if (state.inProgress.isNotEmpty()) {
+                    item(key = "inprogress-header") { SectionHeader("In progress", "${state.inProgress.size}") }
+                    items(state.inProgress, key = { "ip-" + it.itemId }) { item ->
                         DownloadRow(
                             item = item,
-                            onPlay = { viewModel.play(item) },
                             onPause = { viewModel.pause(item.itemId) },
                             onResume = { viewModel.resume(item.itemId) },
                             onRetry = { viewModel.retry(item.itemId) },
                             onDelete = { deleteRequest = DeleteRequest.Item(item) },
                         )
+                    }
+                }
+
+                // ---- shows ----
+                if (state.shows.isNotEmpty()) {
+                    item(key = "shows-header") { SectionHeader("Shows", "${state.shows.size}") }
+                    items(state.shows.chunked(columns), key = { row -> "shows-" + row.first().seriesId }) { row ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(tileSpacing), modifier = Modifier.fillMaxWidth()) {
+                            row.forEach { show ->
+                                DownloadPosterCard(
+                                    imageUrl = show.poster,
+                                    title = show.name,
+                                    subtitle = "${show.doneCount} episode${if (show.doneCount == 1) "" else "s"} · ${formatBytes(show.totalBytes)}",
+                                    watched = show.allWatched,
+                                    unwatchedCount = show.unwatchedCount,
+                                    watchedPercent = null,
+                                    onClick = { viewModel.openShow(show) },
+                                    onDelete = { deleteRequest = DeleteRequest.Show(show) },
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                            repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
+                        }
+                    }
+                }
+
+                // ---- movies ----
+                if (state.movies.isNotEmpty()) {
+                    item(key = "movies-header") { SectionHeader("Movies", "${state.movies.size}") }
+                    items(state.movies.chunked(columns), key = { row -> "movies-" + row.first().itemId }) { row ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(tileSpacing), modifier = Modifier.fillMaxWidth()) {
+                            row.forEach { movie ->
+                                DownloadPosterCard(
+                                    imageUrl = movie.displayImage,
+                                    title = movie.title,
+                                    subtitle =
+                                        listOfNotNull(
+                                            movie.premiereYear?.toString(),
+                                            formatBytes(movie.bytesTotal),
+                                            if (movie.playedToCompletion) "Watched" else null,
+                                        ).joinToString(" · "),
+                                    watched = movie.playedToCompletion,
+                                    unwatchedCount = -1,
+                                    watchedPercent = movie.playedPercent.takeIf { it > 0.0 },
+                                    onClick = { viewModel.play(movie) },
+                                    onDelete = { deleteRequest = DeleteRequest.Item(movie) },
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                            repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
+                        }
                     }
                 }
                 item { Spacer(Modifier.height(32.dp)) }
@@ -164,7 +200,7 @@ fun DownloadsPage(
             val (title, text) =
                 when (req) {
                     is DeleteRequest.Item -> "Delete download?" to "${req.item.episodeTag} ${req.item.title}".trim()
-                    is DeleteRequest.Group -> "Delete all of ${req.group.title}?" to "${req.group.items.size} downloads will be removed from this phone."
+                    is DeleteRequest.Show -> "Delete all of ${req.show.name}?" to "${req.show.doneCount} downloaded episodes will be removed from this phone."
                     DeleteRequest.All -> "Delete all downloads?" to "Every downloaded file will be removed from this phone."
                 }
             AlertDialog(
@@ -175,7 +211,7 @@ fun DownloadsPage(
                     TextButton(onClick = {
                         when (req) {
                             is DeleteRequest.Item -> viewModel.delete(req.item.itemId)
-                            is DeleteRequest.Group -> viewModel.deleteGroup(req.group.key)
+                            is DeleteRequest.Show -> viewModel.deleteShow(req.show.seriesId)
                             DeleteRequest.All -> viewModel.deleteAll()
                         }
                         deleteRequest = null
@@ -187,11 +223,25 @@ fun DownloadsPage(
     }
 }
 
+@Composable
+private fun SectionHeader(
+    title: String,
+    count: String,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 6.dp),
+    ) {
+        Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+        Text(count, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+/** One queued / downloading / paused / failed item with its controls. */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun DownloadRow(
     item: DownloadedItem,
-    onPlay: () -> Unit,
     onPause: () -> Unit,
     onResume: () -> Unit,
     onRetry: () -> Unit,
@@ -199,7 +249,6 @@ private fun DownloadRow(
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val focused by interactionSource.collectIsFocusedAsState()
-    val playable = item.state == DownloadState.DONE
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -217,7 +266,6 @@ private fun DownloadRow(
                     indication = null,
                     onClick = {
                         when (item.state) {
-                            DownloadState.DONE -> onPlay()
                             DownloadState.PAUSED -> onResume()
                             DownloadState.FAILED -> onRetry()
                             else -> onPause()
@@ -227,7 +275,7 @@ private fun DownloadRow(
                 ).padding(10.dp),
     ) {
         AsyncImage(
-            model = item.imageUrl,
+            model = item.displayImage,
             contentDescription = null,
             contentScale = ContentScale.Crop,
             modifier =
@@ -238,7 +286,7 @@ private fun DownloadRow(
         )
         Column(Modifier.weight(1f)) {
             Text(
-                text = if (item.isEpisode) "${item.episodeTag}  ${item.title}" else item.title,
+                text = if (item.isEpisode) "${item.seriesName ?: ""} ${item.episodeTag}  ${item.title}".trim() else item.title,
                 style = MaterialTheme.typography.bodyLarge,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -250,34 +298,26 @@ private fun DownloadRow(
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
-            if (item.state.isActive || item.state == DownloadState.PAUSED) {
-                Spacer(Modifier.height(6.dp))
-                if (item.bytesTotal > 0L) {
-                    LinearProgressIndicator(progress = { item.progressFraction }, modifier = Modifier.fillMaxWidth())
-                } else if (item.state != DownloadState.PAUSED) {
-                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                }
-            } else if (playable && item.runTimeTicks != null && item.lastPositionMs > 0L && !item.playedToCompletion) {
-                Spacer(Modifier.height(6.dp))
-                val frac = (item.lastPositionMs * 10_000.0 / item.runTimeTicks).toFloat().coerceIn(0f, 1f)
-                LinearProgressIndicator(progress = { frac }, modifier = Modifier.fillMaxWidth())
+            Spacer(Modifier.height(6.dp))
+            if (item.bytesTotal > 0L) {
+                LinearProgressIndicator(progress = { item.progressFraction }, modifier = Modifier.fillMaxWidth())
+            } else if (item.state.isActive) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             }
         }
         when (item.state) {
-            DownloadState.DONE -> IconAction(R.string.fa_play, "Play", onPlay)
             DownloadState.PAUSED -> IconAction(R.string.fa_play, "Resume", onResume)
             DownloadState.FAILED -> IconAction(R.string.fa_rotate_right, "Retry", onRetry)
             else -> IconAction(R.string.fa_pause, "Pause", onPause)
         }
-        IconAction(R.string.fa_xmark, "Delete", onDelete, danger = true)
+        IconAction(R.string.fa_xmark, "Cancel", onDelete, danger = true)
     }
 }
 
 private fun statusLine(item: DownloadedItem): String {
     val size =
         when {
-            item.bytesTotal > 0L && item.state != DownloadState.DONE -> "${formatBytes(item.bytesDone)} of ${formatBytes(item.bytesTotal)}"
-            item.bytesTotal > 0L -> formatBytes(item.bytesTotal)
+            item.bytesTotal > 0L -> "${formatBytes(item.bytesDone)} of ${formatBytes(item.bytesTotal)}"
             item.bytesDone > 0L -> formatBytes(item.bytesDone)
             else -> null
         }
@@ -288,12 +328,13 @@ private fun statusLine(item: DownloadedItem): String {
             DownloadState.RESOLVING -> "Finding source…"
             DownloadState.DOWNLOADING -> "Downloading"
             DownloadState.PAUSED -> "Paused"
-            DownloadState.DONE -> if (item.playedToCompletion) "Watched" else "Ready to play"
+            DownloadState.DONE -> "Done"
             DownloadState.FAILED -> "Failed: ${item.error ?: "unknown error"}"
         }
     return listOfNotNull(state, size, tier).joinToString(" · ")
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun IconAction(
     iconRes: Int,
@@ -321,8 +362,9 @@ private fun IconAction(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ActionChip(
+internal fun ActionChip(
     label: String,
     iconRes: Int,
     danger: Boolean = false,

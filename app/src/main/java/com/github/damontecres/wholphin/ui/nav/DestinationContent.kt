@@ -55,6 +55,7 @@ import org.jellyfin.sdk.model.api.BaseItemKind
 import org.jellyfin.sdk.model.api.CollectionType
 import timber.log.Timber
 import com.github.damontecres.wholphin.ui.phone.DownloadsPage
+import com.github.damontecres.wholphin.ui.phone.DownloadedSeriesPage
 
 /**
  * Chose the page for the [Destination]
@@ -354,6 +355,11 @@ fun DestinationContent(
         Destination.Downloads -> {
             LaunchedEffect(Unit) { onClearBackdrop.invoke() }
             DownloadsPage(modifier = modifier)
+        }
+
+        is Destination.DownloadedSeries -> {
+            LaunchedEffect(Unit) { onClearBackdrop.invoke() }
+            DownloadedSeriesPage(preferences = preferences, destination = destination, modifier = modifier)
         }
 
         Destination.NowPlaying -> {

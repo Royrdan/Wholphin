@@ -148,6 +148,12 @@ sealed class Destination(
     @Serializable
     data object Downloads : Destination(false)
 
+    /** Series page for a downloaded show, fed from the downloads database only. */
+    @Serializable
+    data class DownloadedSeries(
+        val seriesId: UUID,
+    ) : Destination(false)
+
     @Serializable
     data object Discover : Destination(false)
 
